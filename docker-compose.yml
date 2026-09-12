@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: uretos-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # management UI, dev only
+    volumes:
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    environment:
+      RABBITMQ_LOAD_DEFINITIONS: "true"
+      RABBITMQ_DEFINITIONS_FILE: /etc/rabbitmq/definitions.json
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Exposes a *restricted* view of the Docker Engine API - never mount
+  # /var/run/docker.sock directly into an application container.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: uretos-docker-proxy
+    privileged: true   # required by this proxy image to read the host socket
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CONTAINERS: 1     # list/inspect containers
+      POST: 1           # allow create/start (needed to provision tenants)
+      IMAGES: 1         # pull images if not present
+      NETWORKS: 1       # create the shared tenant network
+      VOLUMES: 1        # create per-tenant named volumes
+      # everything else defaults to 0 (denied): no EXEC, no SWARM, no SYSTEM, etc.
+    restart: unless-stopped
+
+networks:
+  default:
+    name: uretos-core-net
