@@ -9,6 +9,7 @@ services:
       - "15672:15672"   # management UI, dev only
     volumes:
       - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/10-defaults.conf:ro
     environment:
       RABBITMQ_LOAD_DEFINITIONS: "true"
       RABBITMQ_DEFINITIONS_FILE: /etc/rabbitmq/definitions.json
