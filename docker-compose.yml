@@ -34,7 +34,17 @@ services:
       VOLUMES: 1        # create per-tenant named volumes
       # everything else defaults to 0 (denied): no EXEC, no SWARM, no SYSTEM, etc.
     restart: unless-stopped
-
+    tenant-provisioning-service:
+    build: ./services/tenant-provisioning-service
+    container_name: uretos-tenant-provisioning-service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+    environment:
+      RABBITMQ_URL: "amqp://uretos:uretos_dev_pass@rabbitmq:5672/"
+    restart: unless-stopped
 networks:
   default:
     name: uretos-core-net
