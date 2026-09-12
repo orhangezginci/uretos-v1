@@ -1,0 +1,24 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Docker / build artifacts ---
+*.zip
+*.tar
+*.tar.gz
+
+# --- Env / secrets ---
+.env
+*.local.env
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/
+
+# --- Logs ---
+*.log
