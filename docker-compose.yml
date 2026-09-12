@@ -18,23 +18,21 @@ services:
       timeout: 5s
       retries: 5
 
-  # Exposes a *restricted* view of the Docker Engine API - never mount
-  # /var/run/docker.sock directly into an application container.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: uretos-docker-proxy
-    privileged: true   # required by this proxy image to read the host socket
+    privileged: true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      CONTAINERS: 1     # list/inspect containers
-      POST: 1           # allow create/start (needed to provision tenants)
-      IMAGES: 1         # pull images if not present
-      NETWORKS: 1       # create the shared tenant network
-      VOLUMES: 1        # create per-tenant named volumes
-      # everything else defaults to 0 (denied): no EXEC, no SWARM, no SYSTEM, etc.
+      CONTAINERS: 1
+      POST: 1
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
     restart: unless-stopped
-    tenant-provisioning-service:
+
+  tenant-provisioning-service:
     build: ./services/tenant-provisioning-service
     container_name: uretos-tenant-provisioning-service
     depends_on:
@@ -45,6 +43,7 @@ services:
     environment:
       RABBITMQ_URL: "amqp://uretos:uretos_dev_pass@rabbitmq:5672/"
     restart: unless-stopped
+
 networks:
   default:
     name: uretos-core-net
