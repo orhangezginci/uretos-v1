@@ -12,6 +12,8 @@ Run with:
 """
 import json
 import os
+import random
+import string
 import time
 import uuid
 from datetime import datetime, timezone
@@ -199,7 +201,21 @@ def render_connector_box_tab():
         st.caption("No tenants available yet - create a tenant in the Tenants tab first.")
     else:
         tenant_id = st.selectbox("Tenant", tenant_ids)
-        hardware_id = st.text_input("Hardware ID", help="Beispiel: HW-2026-000123")
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            hardware_id = st.text_input(
+                "Hardware ID", help="Beispiel: HW-2026-000123", key="hardware_id_input"
+            )
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("Auto-generate"):
+                suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+                date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+                st.session_state["hardware_id_input"] = tenant_id + "-" + date_part + "-" + suffix
+                st.rerun()
+
         mac_address = st.text_input("MAC address", help="Beispiel: AA:BB:CC:DD:EE:FF")
 
         if st.button("Create connector box") and hardware_id and mac_address:
