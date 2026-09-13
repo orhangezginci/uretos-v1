@@ -61,4 +61,10 @@ def main() -> None:
     log.info("tenant-command-service listening on '%s'", ROUTING_KEY_IN)
     try:
         channel.start_consuming()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:        channel.stop_consuming()
+
+    connection.close()
+
+
+if __name__ == "__main__":
+    main()
