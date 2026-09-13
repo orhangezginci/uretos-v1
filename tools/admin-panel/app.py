@@ -181,7 +181,7 @@ def login_screen():
 
 def render_tenant_section():
     st.subheader("Create tenant")
-    tenant_id = st.text_input("Tenant ID (lowercase, alphanumeric, hyphens)", placeholder="acme-gmbh")
+    tenant_id = st.text_input("Tenant ID (lowercase, alphanumeric, hyphens)", help="Beispiel: acme-gmbh")
     if st.button("Provision tenant") and tenant_id:
         with st.spinner("Provisioning " + tenant_id + " ..."):
             try:
@@ -220,9 +220,9 @@ def render_connector_box_section():
         return
 
     tenant_id = st.selectbox("Tenant", tenant_ids)
-    hardware_id = st.text_input("Hardware ID", placeholder="HW-2026-000123")
-    mac_address = st.text_input("MAC address", placeholder="AA:BB:CC:DD:EE:FF")
-
+    hardware_id = st.text_input("Hardware ID", help="Beispiel: HW-2026-000123")
+    mac_address = st.text_input("MAC address", help="Beispiel: AA:BB:CC:DD:EE:FF")
+    
     if st.button("Create connector box") and hardware_id and mac_address:
         with st.spinner("Creating connector box ..."):
             try:
