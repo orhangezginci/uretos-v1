@@ -10,9 +10,6 @@ services:
     volumes:
       - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
       - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/10-defaults.conf:ro
-    environment:
-      RABBITMQ_LOAD_DEFINITIONS: "true"
-      RABBITMQ_DEFINITIONS_FILE: /etc/rabbitmq/definitions.json
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -33,6 +30,21 @@ services:
       VOLUMES: 1
     restart: unless-stopped
 
+  system-postgres:
+    image: postgres:16-alpine
+    container_name: uretos-system-postgres
+    environment:
+      POSTGRES_USER: uretos_system
+      POSTGRES_PASSWORD: uretos_system_dev_pass
+      POSTGRES_DB: uretos_system
+    volumes:
+      - system-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   tenant-provisioning-service:
     build: ./services/tenant-provisioning-service
     container_name: uretos-tenant-provisioning-service
@@ -41,6 +53,8 @@ services:
         condition: service_healthy
       docker-socket-proxy:
         condition: service_started
+      system-postgres:
+        condition: service_healthy
     environment:
       RABBITMQ_URL: "amqp://uretos:uretos_dev_pass@rabbitmq:5672/"
     restart: unless-stopped
@@ -48,3 +62,6 @@ services:
 networks:
   default:
     name: uretos-core-net
+
+volumes:
+  system-postgres-data:
