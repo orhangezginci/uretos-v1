@@ -21,7 +21,7 @@ import streamlit as st
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://uretos:uretos_dev_pass@localhost:5672/")
 EXCHANGE = "uretos.events"
-SUPER_ADMIN_USER = os.environ.get("SUPER_ADMIN_USER", "uretos")
+SUPER_ADMIN_USER = os.environ.get("SUPER_ADMIN_USER", "admin")
 SUPER_ADMIN_PASSWORD = os.environ.get("SUPER_ADMIN_PASSWORD", "changeme")
 TIMEOUT_SECONDS = 45
 
@@ -73,57 +73,3 @@ def create_tenant(tenant_id: str) -> dict:
             continue
         connection.close()
         return envelope
-
-    connection.close()
-    raise TimeoutError(f"No response from tenant-provisioning-service within {TIMEOUT_SECONDS}s")
-
-
-def login_screen() -> None:
-    st.title("uretOS super_admin")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if username == SUPER_ADMIN_USER and password == SUPER_ADMIN_PASSWORD:
-            st.session_state["logged_in"] = True
-            st.rerun()
-        else:
-            st.error("Invalid credentials")
-
-
-def admin_screen() -> None:
-    st.title("uretOS - Tenant Management")
-    st.caption("super_admin panel - throwaway internal tool")
-
-    if st.button("Logout"):
-        st.session_state["logged_in"] = False
-        st.rerun()
-
-    st.divider()
-    st.subheader("Create tenant")
-    tenant_id = st.text_input(
-        "Tenant ID (lowercase, alphanumeric, hyphens)", placeholder="acme-gmbh"
-    )
-    if st.button("Provision tenant") and tenant_id:
-        with st.spinner(f"Provisioning '{tenant_id}' ..."):
-            try:
-                envelope = create_tenant(tenant_id)
-            except TimeoutError as exc:
-                st.error(str(exc))
-                return
-
-        if envelope["type"] == "uretos.tenant.event.provisioned":
-            st.success(f"Tenant '{tenant_id}' provisioned")
-            st.json(envelope["data"])
-        else:
-            st.error(f"Provisioning failed: {envelope['data'].get('reason')}")
-
-
-def main() -> None:
-    if not st.session_state.get("logged_in"):
-        login_screen()
-    else:
-        admin_screen()
-
-
-if __name__ == "__main__":
-    main()
