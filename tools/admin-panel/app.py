@@ -190,6 +190,19 @@ def refresh_connector_boxes():
         st.session_state["boxes_cache"] = []
 
 
+def _generate_hardware_id():
+    """
+    Callback for the 'Auto-generate' button. Runs BEFORE the next script
+    rerun renders the hardware_id_input widget, so writing to
+    session_state here is safe (unlike doing it in the main script body
+    after the widget has already been instantiated in the current run).
+    """
+    tenant_id = st.session_state.get("connector_box_tenant_select", "tenant")
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+    st.session_state["hardware_id_input"] = tenant_id + "-" + date_part + "-" + suffix
+
+
 def render_connector_box_tab():
     st.subheader("Create connector box")
 
@@ -200,7 +213,7 @@ def render_connector_box_tab():
     if not tenant_ids:
         st.caption("No tenants available yet - create a tenant in the Tenants tab first.")
     else:
-        tenant_id = st.selectbox("Tenant", tenant_ids)
+        tenant_id = st.selectbox("Tenant", tenant_ids, key="connector_box_tenant_select")
 
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -210,11 +223,7 @@ def render_connector_box_tab():
         with col2:
             st.write("")
             st.write("")
-            if st.button("Auto-generate"):
-                suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
-                date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
-                st.session_state["hardware_id_input"] = tenant_id + "-" + date_part + "-" + suffix
-                st.rerun()
+            st.button("Auto-generate", on_click=_generate_hardware_id)
 
         mac_address = st.text_input("MAC address", help="Beispiel: AA:BB:CC:DD:EE:FF")
 
