@@ -96,6 +96,18 @@ services:
       SYSTEM_DB_URL: "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
       CONNECTOR_BOX_JWT_SECRET: "uretos_dev_jwt_secret_change_me"
     restart: unless-stopped
+  connector-box-query-service:
+    build: ./services/connector-box-query-service
+    container_name: uretos-connector-box-query-service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      system-postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: "amqp://uretos:uretos_dev_pass@rabbitmq:5672/"
+      SYSTEM_DB_URL: "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
+    restart: unless-stopped
 networks:
   default:
     name: uretos-core-net
