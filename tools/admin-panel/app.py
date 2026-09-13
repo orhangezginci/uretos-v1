@@ -39,7 +39,7 @@ def wait_for_response(channel, listen_queue, correlation_id, deadline):
     return None
 
 
-def create_tenant(tenant_id):
+def publish_command_and_wait(command_type, data, success_type, failure_type):
     correlation_id = str(uuid.uuid4())
     connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
     channel = connection.channel()
@@ -47,24 +47,24 @@ def create_tenant(tenant_id):
 
     result = channel.queue_declare(queue="", exclusive=True)
     listen_queue = result.method.queue
-    for routing_key in ["uretos.tenant.event.provisioned", "uretos.tenant.event.provisioning_failed"]:
+    for routing_key in [success_type, failure_type]:
         channel.queue_bind(queue=listen_queue, exchange=EXCHANGE, routing_key=routing_key)
 
     envelope_out = {
         "specversion": "1.0",
         "id": str(uuid.uuid4()),
         "source": "tools/admin-panel",
-        "type": "uretos.tenant.command.create",
+        "type": command_type,
         "datacontenttype": "application/json",
         "time": datetime.now(timezone.utc).isoformat(),
         "correlationid": correlation_id,
         "messagetype": "command",
         "tenantid": "system",
-        "data": {"tenant_id": tenant_id},
+        "data": data,
     }
     channel.basic_publish(
         exchange=EXCHANGE,
-        routing_key="uretos.tenant.command.create",
+        routing_key=command_type,
         body=json.dumps(envelope_out).encode("utf-8"),
         properties=pika.BasicProperties(content_type="application/json"),
     )
@@ -74,54 +74,11 @@ def create_tenant(tenant_id):
     connection.close()
 
     if envelope_in is None:
-        raise TimeoutError("No response from tenant-provisioning-service within " + str(TIMEOUT_SECONDS) + "s")
+        raise TimeoutError("No response received within " + str(TIMEOUT_SECONDS) + "s")
     return envelope_in
 
 
-def create_connector_box(tenant_id, hardware_id, mac_address):
-    correlation_id = str(uuid.uuid4())
-    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-    channel = connection.channel()
-    channel.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=True)
-
-    result = channel.queue_declare(queue="", exclusive=True)
-    listen_queue = result.method.queue
-    for routing_key in ["uretos.connectorbox.event.created", "uretos.connectorbox.event.creation_failed"]:
-        channel.queue_bind(queue=listen_queue, exchange=EXCHANGE, routing_key=routing_key)
-
-    envelope_out = {
-        "specversion": "1.0",
-        "id": str(uuid.uuid4()),
-        "source": "tools/admin-panel",
-        "type": "uretos.connectorbox.command.create",
-        "datacontenttype": "application/json",
-        "time": datetime.now(timezone.utc).isoformat(),
-        "correlationid": correlation_id,
-        "messagetype": "command",
-        "tenantid": "system",
-        "data": {
-            "tenant_id": tenant_id,
-            "hardware_id": hardware_id,
-            "mac_address": mac_address,
-        },
-    }
-    channel.basic_publish(
-        exchange=EXCHANGE,
-        routing_key="uretos.connectorbox.command.create",
-        body=json.dumps(envelope_out).encode("utf-8"),
-        properties=pika.BasicProperties(content_type="application/json"),
-    )
-
-    deadline = time.monotonic() + TIMEOUT_SECONDS
-    envelope_in = wait_for_response(channel, listen_queue, correlation_id, deadline)
-    connection.close()
-
-    if envelope_in is None:
-        raise TimeoutError("No response from connector-box-command-service within " + str(TIMEOUT_SECONDS) + "s")
-    return envelope_in
-
-
-def list_tenants_rpc():
+def query_rpc(query_type, data):
     correlation_id = str(uuid.uuid4())
     connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
     channel = connection.channel()
@@ -131,13 +88,13 @@ def list_tenants_rpc():
         "specversion": "1.0",
         "id": str(uuid.uuid4()),
         "source": "tools/admin-panel",
-        "type": "uretos.tenant.query.list",
+        "type": query_type,
         "datacontenttype": "application/json",
         "time": datetime.now(timezone.utc).isoformat(),
         "correlationid": correlation_id,
         "messagetype": "query",
         "tenantid": "system",
-        "data": {},
+        "data": data,
     }
 
     result_holder = {}
@@ -150,7 +107,7 @@ def list_tenants_rpc():
     channel.basic_consume(queue="amq.rabbitmq.reply-to", on_message_callback=on_response, auto_ack=True)
     channel.basic_publish(
         exchange=EXCHANGE,
-        routing_key="uretos.tenant.query.list",
+        routing_key=query_type,
         properties=pika.BasicProperties(
             reply_to="amq.rabbitmq.reply-to",
             correlation_id=correlation_id,
@@ -163,8 +120,8 @@ def list_tenants_rpc():
     connection.close()
 
     if "envelope" not in result_holder:
-        raise TimeoutError("No response from tenant-query-service within " + str(TIMEOUT_SECONDS) + "s")
-    return result_holder["envelope"]["data"]["tenants"]
+        raise TimeoutError("No response received within " + str(TIMEOUT_SECONDS) + "s")
+    return result_holder["envelope"]
 
 
 def login_screen():
@@ -179,13 +136,27 @@ def login_screen():
             st.error("Invalid credentials")
 
 
-def render_tenant_section():
+def refresh_tenants():
+    try:
+        envelope = query_rpc("uretos.tenant.query.list", {})
+        st.session_state["tenants_cache"] = envelope["data"]["tenants"]
+    except TimeoutError as exc:
+        st.error(str(exc))
+        st.session_state["tenants_cache"] = []
+
+
+def render_tenant_tab():
     st.subheader("Create tenant")
     tenant_id = st.text_input("Tenant ID (lowercase, alphanumeric, hyphens)", help="Beispiel: acme-gmbh")
     if st.button("Provision tenant") and tenant_id:
         with st.spinner("Provisioning " + tenant_id + " ..."):
             try:
-                envelope = create_tenant(tenant_id)
+                envelope = publish_command_and_wait(
+                    "uretos.tenant.command.create",
+                    {"tenant_id": tenant_id},
+                    "uretos.tenant.event.provisioned",
+                    "uretos.tenant.event.provisioning_failed",
+                )
             except TimeoutError as exc:
                 st.error(str(exc))
                 return
@@ -193,17 +164,14 @@ def render_tenant_section():
         if envelope["type"] == "uretos.tenant.event.provisioned":
             st.success("Tenant " + tenant_id + " provisioned")
             st.json(envelope["data"])
+            refresh_tenants()
         else:
             st.error("Provisioning failed: " + str(envelope["data"].get("reason")))
 
     st.divider()
     st.subheader("Existing tenants")
     if st.button("Refresh tenant list") or "tenants_cache" not in st.session_state:
-        try:
-            st.session_state["tenants_cache"] = list_tenants_rpc()
-        except TimeoutError as exc:
-            st.error(str(exc))
-            st.session_state["tenants_cache"] = []
+        refresh_tenants()
 
     if st.session_state.get("tenants_cache"):
         st.table(st.session_state["tenants_cache"])
@@ -211,32 +179,60 @@ def render_tenant_section():
         st.caption("No tenants yet.")
 
 
-def render_connector_box_section():
+def refresh_connector_boxes():
+    try:
+        envelope = query_rpc("uretos.connectorbox.query.list", {})
+        st.session_state["boxes_cache"] = envelope["data"]["connector_boxes"]
+    except TimeoutError as exc:
+        st.error(str(exc))
+        st.session_state["boxes_cache"] = []
+
+
+def render_connector_box_tab():
     st.subheader("Create connector box")
 
+    if "tenants_cache" not in st.session_state:
+        refresh_tenants()
     tenant_ids = [t["tenant_id"] for t in st.session_state.get("tenants_cache", [])]
+
     if not tenant_ids:
-        st.caption("No tenants available yet - create a tenant first, then refresh the tenant list above.")
-        return
+        st.caption("No tenants available yet - create a tenant in the Tenants tab first.")
+    else:
+        tenant_id = st.selectbox("Tenant", tenant_ids)
+        hardware_id = st.text_input("Hardware ID", help="Beispiel: HW-2026-000123")
+        mac_address = st.text_input("MAC address", help="Beispiel: AA:BB:CC:DD:EE:FF")
 
-    tenant_id = st.selectbox("Tenant", tenant_ids)
-    hardware_id = st.text_input("Hardware ID", help="Beispiel: HW-2026-000123")
-    mac_address = st.text_input("MAC address", help="Beispiel: AA:BB:CC:DD:EE:FF")
-    
-    if st.button("Create connector box") and hardware_id and mac_address:
-        with st.spinner("Creating connector box ..."):
-            try:
-                envelope = create_connector_box(tenant_id, hardware_id, mac_address)
-            except TimeoutError as exc:
-                st.error(str(exc))
-                return
+        if st.button("Create connector box") and hardware_id and mac_address:
+            with st.spinner("Creating connector box ..."):
+                try:
+                    envelope = publish_command_and_wait(
+                        "uretos.connectorbox.command.create",
+                        {"tenant_id": tenant_id, "hardware_id": hardware_id, "mac_address": mac_address},
+                        "uretos.connectorbox.event.created",
+                        "uretos.connectorbox.event.creation_failed",
+                    )
+                except TimeoutError as exc:
+                    st.error(str(exc))
+                    envelope = None
 
-        if envelope["type"] == "uretos.connectorbox.event.created":
-            st.success("Connector box created for tenant " + tenant_id)
-            st.json(envelope["data"])
-            st.caption("Pairing token is only shown once here - it is not returned by list queries.")
-        else:
-            st.error("Creation failed: " + str(envelope["data"].get("reason")))
+            if envelope is not None:
+                if envelope["type"] == "uretos.connectorbox.event.created":
+                    st.success("Connector box created for tenant " + tenant_id)
+                    st.json(envelope["data"])
+                    st.caption("Pairing token is only shown once here - it is not returned by list queries.")
+                    refresh_connector_boxes()
+                else:
+                    st.error("Creation failed: " + str(envelope["data"].get("reason")))
+
+    st.divider()
+    st.subheader("Existing connector boxes")
+    if st.button("Refresh connector box list") or "boxes_cache" not in st.session_state:
+        refresh_connector_boxes()
+
+    if st.session_state.get("boxes_cache"):
+        st.table(st.session_state["boxes_cache"])
+    else:
+        st.caption("No connector boxes yet.")
 
 
 def admin_screen():
@@ -248,9 +244,11 @@ def admin_screen():
         st.rerun()
 
     st.divider()
-    render_tenant_section()
-    st.divider()
-    render_connector_box_section()
+    tab_tenants, tab_boxes = st.tabs(["Tenants", "Connector Boxes"])
+    with tab_tenants:
+        render_tenant_tab()
+    with tab_boxes:
+        render_connector_box_tab()
 
 
 def main():
