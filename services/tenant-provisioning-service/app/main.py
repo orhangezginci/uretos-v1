@@ -7,6 +7,10 @@ Publishes: uretos.tenant.event.provisioned (messagetype=event,  tenantid=<new te
 
 Only the super_admin level is expected to ever send the create-command, which
 is why it travels under tenantid="system" - it is not itself tenant data.
+
+Provisions three isolated things per tenant: a Postgres container, a Redis
+container (both via docker-socket-proxy), and a RabbitMQ vhost+user (via the
+RabbitMQ Management API) - DB isolation and messaging isolation together.
 """
 from __future__ import annotations
 
@@ -17,7 +21,11 @@ import os
 import pika
 
 from cloudevents import build_envelope, loads
-from provisioning import ProvisioningError, provision_tenant_infrastructure
+from provisioning import (
+    ProvisioningError,
+    provision_tenant_infrastructure,
+    provision_tenant_rabbitmq,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tenant-provisioning-service")
@@ -43,10 +51,12 @@ def handle_command(channel: pika.channel.Channel, method, properties, body: byte
 
     try:
         infra_info = provision_tenant_infrastructure(tenant_id)
+        rabbitmq_info = provision_tenant_rabbitmq(tenant_id)
+        infra_info["rabbitmq"] = rabbitmq_info
         out_type = "uretos.tenant.event.provisioned"
         out_tenant = tenant_id
         out_data = infra_info
-        log.info("Tenant '%s' provisioned successfully", tenant_id)
+        log.info("Tenant '%s' provisioned successfully (DB + messaging isolation)", tenant_id)
     except ProvisioningError as exc:
         log.error("Provisioning failed for tenant_id=%s: %s", tenant_id, exc)
         out_type = "uretos.tenant.event.provisioning_failed"
@@ -86,6 +96,7 @@ def main() -> None:
         channel.start_consuming()
     except KeyboardInterrupt:
         channel.stop_consuming()
+
     connection.close()
 
 
