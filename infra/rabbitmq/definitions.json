@@ -8,11 +8,23 @@
       "name": "uretos",
       "password": "uretos_dev_pass",
       "tags": ["administrator"]
+    },
+    {
+      "name": "uretos_system",
+      "password": "uretos_system_dev_pass",
+      "tags": []
     }
   ],
   "permissions": [
     {
       "user": "uretos",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "uretos_system",
       "vhost": "/",
       "configure": ".*",
       "write": ".*",
