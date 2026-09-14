@@ -3,8 +3,9 @@ Per-tenant infrastructure provisioning.
 
 Talks to the Docker Engine API *through* docker-socket-proxy (never the raw
 socket) to create one isolated Postgres container and one isolated Redis
-container per tenant. This is the technical backbone of the "each tenant has
-their own DB server container" guarantee.
+container per tenant. Also creates an isolated RabbitMQ vhost + user per
+tenant via the RabbitMQ Management HTTP API, for messaging-level isolation
+on top of the DB-level isolation.
 
 NOTE on scope: this is a pragmatic, right-sized implementation for the
 "technically impossible to leak data between tenants" trust story - not a
@@ -14,12 +15,19 @@ secrets manager should replace that before this touches real customer data.
 """
 from __future__ import annotations
 
+import os
 import re
 import secrets
+
 import docker
+import requests
 
 DOCKER_HOST = "tcp://docker-socket-proxy:2375"
 NETWORK_NAME = "uretos-tenant-net"
+
+RABBITMQ_MGMT_URL = os.environ.get("RABBITMQ_MGMT_URL", "http://rabbitmq:15672")
+RABBITMQ_ADMIN_USER = os.environ.get("RABBITMQ_ADMIN_USER", "uretos")
+RABBITMQ_ADMIN_PASSWORD = os.environ.get("RABBITMQ_ADMIN_PASSWORD", "uretos_dev_pass")
 
 _TENANT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$")
 
@@ -119,3 +127,45 @@ def _ensure_network(client: docker.DockerClient) -> None:
         client.networks.get(NETWORK_NAME)
     except docker.errors.NotFound:
         client.networks.create(NETWORK_NAME, driver="bridge")
+
+
+def provision_tenant_rabbitmq(tenant_id: str) -> dict:
+    """
+    Creates an isolated RabbitMQ vhost + a user scoped exclusively to it,
+    via the Management HTTP API (not AMQP - vhost/user management isn't
+    part of the AMQP protocol itself).
+    """
+    auth = (RABBITMQ_ADMIN_USER, RABBITMQ_ADMIN_PASSWORD)
+    vhost_name = f"tenant-{tenant_id}"
+    rabbitmq_user = f"tenant_{tenant_id}"
+    rabbitmq_password = secrets.token_urlsafe(24)
+
+    vhost_response = requests.put(
+        f"{RABBITMQ_MGMT_URL}/api/vhosts/{vhost_name}", auth=auth, timeout=10
+    )
+    if vhost_response.status_code not in (201, 204):
+        raise ProvisioningError(f"Failed to create RabbitMQ vhost: {vhost_response.text}")
+
+    user_response = requests.put(
+        f"{RABBITMQ_MGMT_URL}/api/users/{rabbitmq_user}",
+        auth=auth,
+        json={"password": rabbitmq_password, "tags": ""},
+        timeout=10,
+    )
+    if user_response.status_code not in (201, 204):
+        raise ProvisioningError(f"Failed to create RabbitMQ user: {user_response.text}")
+
+    permission_response = requests.put(
+        f"{RABBITMQ_MGMT_URL}/api/permissions/{vhost_name}/{rabbitmq_user}",
+        auth=auth,
+        json={"configure": ".*", "write": ".*", "read": ".*"},
+        timeout=10,
+    )
+    if permission_response.status_code not in (201, 204):
+        raise ProvisioningError(f"Failed to set RabbitMQ permissions: {permission_response.text}")
+
+    return {
+        "vhost": vhost_name,
+        "user": rabbitmq_user,
+        "password": rabbitmq_password,
+    }
