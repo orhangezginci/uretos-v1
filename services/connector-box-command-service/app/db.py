@@ -89,3 +89,47 @@ def insert_connector_box(tenant_id: str, hardware_id: str, mac_address: str) -> 
         "status": "pending_pairing",
         "pairing_token_expires_in_hours": PAIRING_TOKEN_TTL_HOURS,
     }
+# ergänzen in services/connector-box-command-service/app/db.py
+
+def pair_connector_box(hardware_id: str) -> dict[str, Any]:
+    """
+    Looks up a box by hardware_id and transitions pending_pairing -> paired.
+    Returns the box's pairing_token so the (simulated) device receives its
+    identity for the first time. Raises ConnectorBoxError if the
+    hardware_id is unknown or the box is not in pending_pairing state
+    (pairing is a one-time transition, not idempotent).
+    """
+    with psycopg.connect(SYSTEM_DB_URL) as conn:
+        row = conn.execute(
+            """
+            SELECT box_id, tenant_id, status, pairing_token
+            FROM connector_boxes
+            WHERE hardware_id = %s
+            FOR UPDATE
+            """,
+            (hardware_id,),
+        ).fetchone()
+
+        if row is None:
+            raise ConnectorBoxError(f"Unknown hardware_id '{hardware_id}'")
+
+        box_id, tenant_id, status, pairing_token = row
+        if status != "pending_pairing":
+            raise ConnectorBoxError(
+                f"Box '{hardware_id}' is not in pending_pairing state "
+                f"(current status: '{status}')"
+            )
+
+        conn.execute(
+            "UPDATE connector_boxes SET status = 'paired' WHERE hardware_id = %s",
+            (hardware_id,),
+        )
+        conn.commit()
+
+    return {
+        "box_id": str(box_id),
+        "tenant_id": tenant_id,
+        "hardware_id": hardware_id,
+        "pairing_token": pairing_token,
+        "status": "paired",
+    }
