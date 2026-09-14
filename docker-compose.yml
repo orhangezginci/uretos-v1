@@ -72,10 +72,7 @@ services:
         condition: service_healthy
     environment:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
-      SYSTEM_DB_URL: "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
-    restart: unless-stopped
-
-  tenant-query-service:
+      SYSTEM_DB_URL: "postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"  tenant-query-service:
     build: ./services/tenant-query-service
     container_name: uretos-tenant-query-service
     depends_on:
@@ -85,8 +82,7 @@ services:
         condition: service_healthy
     environment:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
-      SYSTEM_DB_URL: "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
-    restart: unless-stopped
+      SYSTEM_DB_URL: "postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"    restart: unless-stopped
 
   connector-box-command-service:
     build: ./services/connector-box-command-service
