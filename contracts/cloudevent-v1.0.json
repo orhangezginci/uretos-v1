@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uretOS CloudEvent v1.0 Specification",
+  "description": "Standardized CloudEvent envelope for all asynchronous message exchanges across uretOS services. This is documentation/reference only - services copy this file locally rather than importing it as a shared package (hyper-decoupled principle).",
+  "type": "object",
+  "required": [
+    "specversion",
+    "id",
+    "source",
+    "type",
+    "datacontenttype",
+    "time",
+    "correlationid",
+    "messagetype",
+    "tenantid",
+    "data"
+  ],
+  "properties": {
+    "specversion": {
+      "type": "string",
+      "const": "1.0",
+      "description": "CloudEvents specification version."
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for the specific event instance."
+    },
+    "source": {
+      "type": "string",
+      "format": "uri-reference",
+      "description": "Identifies the context or service in which an event happened (e.g., 'uretos/services/machine-command-service')."
+    },
+    "type": {
+      "type": "string",
+      "description": "Describes the type of event related to the originating occurrence (e.g., 'uretos.machine.command.create')."
+    },
+    "datacontenttype": {
+      "type": "string",
+      "const": "application/json",
+      "description": "Content type of data value."
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the occurrence happened (ISO 8601 / RFC 3339)."
+    },
+    "correlationid": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Mandatory tracing ID passed across execution flows to correlate events, commands, and queries."
+    },
+    "messagetype": {
+      "type": "string",
+      "enum": ["event", "command", "query"],
+      "description": "Explicit message categorization for strict workflow handling."
+    },
+    "tenantid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifies which tenant this message belongs to. Reserved value 'system' is used for super_admin-level operations such as tenant provisioning itself."
+    },
+    "subject": {
+      "type": "string",
+      "description": "Optional subject of the event in the context of the event producer (e.g., entity ID)."
+    },
+    "data": {
+      "type": "object",
+      "description": "Domain payload associated with the message."
+    }
+  }
+}
