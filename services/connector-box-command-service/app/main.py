@@ -1,12 +1,17 @@
 """
 connector-box-command-service
 
-Consumes: uretos.connectorbox.command.create (messagetype=command, tenantid="system")
-Publishes: uretos.connectorbox.event.created (messagetype=event, tenantid=<tenant>)
-       or: uretos.connectorbox.event.creation_failed (messagetype=event, tenantid="system")
+Consumes:
+  uretos.connectorbox.command.create (messagetype=command, tenantid="system")
+    -> Publishes uretos.connectorbox.event.created / .creation_failed
 
-Required data fields on the command: tenant_id, hardware_id, mac_address.
-Only the super_admin level is expected to send this command.
+  uretos.connectorbox.command.pair (messagetype=command, tenantid="system")
+    -> Simulated device boot: box presents only its hardware_id, service
+       verifies the registry match and transitions pending_pairing -> paired.
+    -> Publishes uretos.connectorbox.event.paired / .pairing_failed
+
+Only the super_admin level / the (simulated) device itself is expected to
+send these commands.
 """
 from __future__ import annotations
 
@@ -17,21 +22,34 @@ import os
 import pika
 
 from cloudevents import build_envelope, loads
-from db import ConnectorBoxError, ensure_schema, insert_connector_box
+from db import ConnectorBoxError, ensure_schema, insert_connector_box, pair_connector_box
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("connector-box-command-service")
 
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://uretos:uretos_dev_pass@rabbitmq:5672/")
 EXCHANGE = "uretos.events"
-COMMAND_QUEUE = "connector-box-command-service.connectorbox.command.create"
-ROUTING_KEY_IN = "uretos.connectorbox.command.create"
 SOURCE = "uretos/services/connector-box-command-service"
 
-REQUIRED_FIELDS = ("tenant_id", "hardware_id", "mac_address")
+CREATE_QUEUE = "connector-box-command-service.connectorbox.command.create"
+CREATE_ROUTING_KEY = "uretos.connectorbox.command.create"
+CREATE_REQUIRED_FIELDS = ("tenant_id", "hardware_id", "mac_address")
+
+PAIR_QUEUE = "connector-box-command-service.connectorbox.command.pair"
+PAIR_ROUTING_KEY = "uretos.connectorbox.command.pair"
+PAIR_REQUIRED_FIELDS = ("hardware_id",)
 
 
-def handle_command(channel: pika.channel.Channel, method, properties, body: bytes) -> None:
+def _publish_response(channel, response) -> None:
+    channel.basic_publish(
+        exchange=EXCHANGE,
+        routing_key=response["type"],
+        body=json.dumps(response).encode("utf-8"),
+        properties=pika.BasicProperties(content_type="application/json"),
+    )
+
+
+def handle_create(channel: pika.channel.Channel, method, properties, body: bytes) -> None:
     try:
         envelope = loads(body)
     except Exception:
@@ -41,10 +59,10 @@ def handle_command(channel: pika.channel.Channel, method, properties, body: byte
 
     correlation_id = envelope["correlationid"]
     data = envelope["data"]
-    missing = [f for f in REQUIRED_FIELDS if not data.get(f)]
+    missing = [f for f in CREATE_REQUIRED_FIELDS if not data.get(f)]
 
     if missing:
-        log.error("Rejecting command - missing required fields: %s", missing)
+        log.error("Rejecting create command - missing required fields: %s", missing)
         response = build_envelope(
             event_type="uretos.connectorbox.event.creation_failed",
             source=SOURCE,
@@ -80,12 +98,56 @@ def handle_command(channel: pika.channel.Channel, method, properties, body: byte
                 correlation_id=correlation_id,
             )
 
-    channel.basic_publish(
-        exchange=EXCHANGE,
-        routing_key=response["type"],
-        body=json.dumps(response).encode("utf-8"),
-        properties=pika.BasicProperties(content_type="application/json"),
-    )
+    _publish_response(channel, response)
+    channel.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def handle_pair(channel: pika.channel.Channel, method, properties, body: bytes) -> None:
+    try:
+        envelope = loads(body)
+    except Exception:
+        log.exception("Rejecting malformed message - not valid CloudEvent envelope")
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        return
+
+    correlation_id = envelope["correlationid"]
+    data = envelope["data"]
+    missing = [f for f in PAIR_REQUIRED_FIELDS if not data.get(f)]
+
+    if missing:
+        log.error("Rejecting pair command - missing required fields: %s", missing)
+        response = build_envelope(
+            event_type="uretos.connectorbox.event.pairing_failed",
+            source=SOURCE,
+            data={"reason": f"Missing required fields: {missing}"},
+            tenant_id="system",
+            messagetype="event",
+            correlation_id=correlation_id,
+        )
+    else:
+        try:
+            box_info = pair_connector_box(hardware_id=data["hardware_id"])
+            log.info("Connector box '%s' paired (tenant '%s')", box_info["hardware_id"], box_info["tenant_id"])
+            response = build_envelope(
+                event_type="uretos.connectorbox.event.paired",
+                source=SOURCE,
+                data=box_info,
+                tenant_id=box_info["tenant_id"],
+                messagetype="event",
+                correlation_id=correlation_id,
+            )
+        except ConnectorBoxError as exc:
+            log.error("Connector box pairing failed: %s", exc)
+            response = build_envelope(
+                event_type="uretos.connectorbox.event.pairing_failed",
+                source=SOURCE,
+                data={"reason": str(exc)},
+                tenant_id="system",
+                messagetype="event",
+                correlation_id=correlation_id,
+            )
+
+    _publish_response(channel, response)
     channel.basic_ack(delivery_tag=method.delivery_tag)
 
 
@@ -94,15 +156,19 @@ def main() -> None:
 
     connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
     channel = connection.channel()
-
     channel.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=True)
-    channel.queue_declare(queue=COMMAND_QUEUE, durable=True)
-    channel.queue_bind(queue=COMMAND_QUEUE, exchange=EXCHANGE, routing_key=ROUTING_KEY_IN)
+
+    channel.queue_declare(queue=CREATE_QUEUE, durable=True)
+    channel.queue_bind(queue=CREATE_QUEUE, exchange=EXCHANGE, routing_key=CREATE_ROUTING_KEY)
+
+    channel.queue_declare(queue=PAIR_QUEUE, durable=True)
+    channel.queue_bind(queue=PAIR_QUEUE, exchange=EXCHANGE, routing_key=PAIR_ROUTING_KEY)
 
     channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue=COMMAND_QUEUE, on_message_callback=handle_command)
+    channel.basic_consume(queue=CREATE_QUEUE, on_message_callback=handle_create)
+    channel.basic_consume(queue=PAIR_QUEUE, on_message_callback=handle_pair)
 
-    log.info("connector-box-command-service listening on '%s'", ROUTING_KEY_IN)
+    log.info("connector-box-command-service listening on '%s' and '%s'", CREATE_ROUTING_KEY, PAIR_ROUTING_KEY)
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
