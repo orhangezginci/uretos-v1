@@ -18,6 +18,21 @@ SYSTEM_DB_URL = os.environ.get(
     "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system",
 )
 
+def get_connector_box_by_hardware_id(hardware_id: str) -> dict[str, Any] | None:
+    with psycopg.connect(SYSTEM_DB_URL, row_factory=dict_row) as conn:
+        row = conn.execute(
+            """
+            SELECT box_id, tenant_id, hardware_id, mac_address, status, created_at
+            FROM connector_boxes
+            WHERE hardware_id = %s
+            """,
+            (hardware_id,),
+        ).fetchone()
+    if not row:
+        return None
+    row["box_id"] = str(row["box_id"])
+    row["created_at"] = row["created_at"].isoformat()
+    return row
 
 def list_connector_boxes() -> list[dict[str, Any]]:
     """
