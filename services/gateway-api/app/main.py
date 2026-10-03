@@ -8,12 +8,20 @@ only thing that translates REST calls into internal CloudEvent commands
 and queries.
 
 Endpoints:
-  POST /v1/connector-boxes/pair
-  POST /v1/connector-boxes
-  GET  /v1/connector-boxes
   POST /v1/tenants
   GET  /v1/tenants
+  POST /v1/connector-boxes
+  GET  /v1/connector-boxes
+  POST /v1/connector-boxes/pair
+  POST /v1/connector-boxes/handshake
+  POST /v1/connector-boxes/autoscan
+  GET  /v1/connector-boxes/<hardware_id>/machines
+  GET  /v1/machines?tenant_id=<tenant_id>
   GET  /healthz
+
+Machines live in the per-tenant database, so machine queries always carry a
+tenant_id: for a box it is resolved from the box itself, for the tenant-wide
+list it is a required query parameter (until authentication provides it).
 """
 from __future__ import annotations
 
@@ -132,6 +140,28 @@ def query_rpc(query_type: str, data: dict):
     return result_holder.get("envelope")
 
 
+def machine_query_error_response(data: dict):
+    """Maps the error_code of a machine query result to an HTTP response."""
+    status = {
+        "tenant_required": 400,
+        "box_id_required": 400,
+        "tenant_not_found": 404,
+    }.get(data.get("error_code"), 500)
+    return jsonify({"error": data.get("error", "Machine query failed")}), status
+
+
+def public_tenant_view(provisioned_data: dict) -> dict:
+    """
+    What an external client may learn about a freshly provisioned tenant.
+
+    The provisioned event also carries infrastructure credentials (Postgres and
+    RabbitMQ passwords). Those are meant for tenant-command-service only (tenant
+    registry in system-postgres) and must never leave the platform. Whitelist
+    instead of blacklist: new fields in the event stay private by default.
+    """
+    return {"tenant_id": provisioned_data.get("tenant_id"), "status": "provisioned"}
+
+
 @app.route("/v1/connector-boxes/pair", methods=["POST"])
 def pair_connector_box():
     payload = request.get_json(silent=True) or {}
@@ -159,6 +189,115 @@ def pair_connector_box():
     # by parsing the reason string would be more correct but more brittle;
     # revisit once the gateway has more than one consumer of this response.
     return jsonify({"error": envelope["data"].get("reason", "Pairing failed")}), 400
+
+
+@app.route("/v1/machines", methods=["GET"])
+def list_all_machines():
+    # Machines live in the per-tenant database -> a tenant is always required.
+    # Until authentication provides it, it is passed as a query parameter.
+    tenant_id = request.args.get("tenant_id")
+    if not tenant_id:
+        return jsonify({"error": "tenant_id query parameter is required"}), 400
+
+    envelope = query_rpc("uretos.machine.query.list", {"tenant_id": tenant_id})
+    if envelope is None:
+        return jsonify({"error": "Timed out waiting for query result"}), 504
+
+    data = envelope.get("data", {})
+    if data.get("error_code"):
+        return machine_query_error_response(data)
+    return jsonify(data.get("machines", [])), 200
+
+
+@app.route("/v1/connector-boxes/<hardware_id>/machines", methods=["GET"])
+def list_machines_by_hardware_id(hardware_id: str):
+    # The box (system-postgres) is the authoritative source for box_id AND tenant_id.
+    box_env = query_rpc("uretos.connectorbox.query.by_hardware_id", {"hardware_id": hardware_id})
+    if box_env is None:
+        return jsonify({"error": "Timed out waiting for query result"}), 504
+
+    box = box_env.get("data", {}).get("connector_box")
+    if not box:
+        return jsonify({"error": "Connector box not found"}), 404
+
+    envelope = query_rpc(
+        "uretos.machine.query.by_box",
+        {"box_id": box["box_id"], "tenant_id": box["tenant_id"]},
+    )
+    if envelope is None:
+        return jsonify({"error": "Timed out waiting for query result"}), 504
+
+    data = envelope.get("data", {})
+    if data.get("error_code"):
+        return machine_query_error_response(data)
+    return jsonify(data.get("machines", [])), 200
+
+
+@app.route("/v1/connector-boxes/autoscan", methods=["POST"])
+def register_autoscan_machines():
+    payload = request.get_json(silent=True) or {}
+    hardware_id = payload.get("hardware_id")
+    machines = payload.get("machines", [])
+
+    if not hardware_id:
+        return jsonify({"error": "hardware_id is required"}), 400
+
+    # Pairing-Status selbst prüfen statt sich auf Handshake-vor-Autoscan beim Aufrufer zu verlassen
+    box_env = query_rpc("uretos.connectorbox.query.by_hardware_id", {"hardware_id": hardware_id})
+    if box_env is None:
+        return jsonify({"error": "Timed out waiting for query result"}), 504
+
+    box = box_env.get("data", {}).get("connector_box")
+    if not box:
+        return jsonify({"error": "Connector box not found"}), 404
+
+    if box.get("status") != "paired":
+        return jsonify({"error": "Box is not paired yet", "status": box.get("status")}), 403
+
+    log.info("Autoscan registration request for hardware_id=%s, machines_count=%d", hardware_id, len(machines))
+
+    envelope = publish_command_and_wait(
+        "uretos.machine.command.register",
+        {"hardware_id": hardware_id, "machines": machines},
+        "uretos.machine.event.registered",
+        "uretos.machine.event.registration_failed",
+    )
+
+    if envelope is None:
+        return jsonify({"error": "Timed out waiting for machine registration result"}), 504
+
+    if envelope["type"] == "uretos.machine.event.registered":
+        return jsonify(envelope["data"]), 200
+
+    return jsonify({"error": envelope["data"].get("reason", "Machine registration failed")}), 400
+@app.route("/v1/connector-boxes/handshake", methods=["POST"])
+def connector_box_handshake():
+    data = request.get_json(silent=True) or {}
+    hardware_id = data.get("hardware_id")
+
+    if not hardware_id:
+        return jsonify({"error": "hardware_id is required"}), 400
+
+    # Gezielter RPC-Query an den Query-Service statt Listen-Abfrage
+    envelope = query_rpc("uretos.connectorbox.query.by_hardware_id", {"hardware_id": hardware_id})
+    if envelope is None:
+        return jsonify({"error": "Timed out waiting for query result"}), 504
+
+    box = envelope.get("data", {}).get("connector_box")
+
+    if not box:
+        return jsonify({"error": "Box not found, initial pairing required", "status": "pending_pairing"}), 404
+
+    if box.get("status") != "paired":
+        return jsonify({"error": "Box is not paired yet", "status": box.get("status")}), 403
+
+    log.info("Handshake successful for box: %s", hardware_id)
+    return jsonify({
+        "status": "ok",
+        "box_id": box.get("box_id"),
+        "tenant_id": box.get("tenant_id"),
+        "message": "Handshake accepted. Proceed with autoscan."
+    }), 200
 
 
 @app.route("/v1/connector-boxes", methods=["POST"])
@@ -216,7 +355,7 @@ def create_tenant():
         return jsonify({"error": "Timed out waiting for provisioning result"}), 504
 
     if envelope["type"] == "uretos.tenant.event.provisioned":
-        return jsonify(envelope["data"]), 201
+        return jsonify(public_tenant_view(envelope["data"])), 201
 
     return jsonify({"error": envelope["data"].get("reason", "Provisioning failed")}), 400
 
