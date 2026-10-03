@@ -7,13 +7,21 @@ writer for the `tenants` table - no other service is allowed to write to it.
 
 Does NOT consume uretos.tenant.event.provisioning_failed - a failed
 provisioning attempt never becomes a tenant record.
+
+Error handling: a message is only requeued when a retry can help (system-postgres
+temporarily unreachable). Everything else is permanent and would otherwise be
+redelivered forever, blocking the queue (prefetch_count=1). Log messages never
+include the exception text of database errors: SQLAlchemy puts the statement
+parameters into it, and here those are the tenant's passwords.
 """
 from __future__ import annotations
 
 import logging
 import os
+import time
 
 import pika
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from cloudevents import loads
 from db import ensure_schema, insert_tenant
@@ -25,6 +33,9 @@ RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://uretos:uretos_dev_pass@rab
 EXCHANGE = "uretos.events"
 QUEUE = "tenant-command-service.tenant.event.provisioned"
 ROUTING_KEY_IN = "uretos.tenant.event.provisioned"
+
+# Pause before a requeue, so an unreachable database does not cause a hot loop
+RETRY_DELAY_SECONDS = 5
 
 
 def handle_provisioned(channel: pika.channel.Channel, method, properties, body: bytes) -> None:
@@ -40,9 +51,34 @@ def handle_provisioned(channel: pika.channel.Channel, method, properties, body: 
         insert_tenant(envelope["data"])
         log.info("Tenant '%s' written to registry", tenant_id)
         channel.basic_ack(delivery_tag=method.delivery_tag)
-    except Exception:
-        log.exception("Failed to write tenant '%s' to registry - requeueing", tenant_id)
+
+    except IntegrityError:
+        # Permanent: the tenant is already in the registry. Redelivery can never succeed.
+        log.error(
+            "Tenant '%s' is already in the registry - the credentials of this provisioning "
+            "were NOT stored, the existing entry may be stale. Dropping message.",
+            tenant_id,
+        )
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    except (KeyError, TypeError) as exc:
+        # Permanent: the event payload is incomplete or has the wrong shape.
+        log.error("Malformed provisioned event for tenant '%s' (%s: %s). Dropping message.",
+                  tenant_id, type(exc).__name__, exc)
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    except OperationalError:
+        # Transient: system-postgres not reachable. Retry, but with a pause.
+        log.warning("system-postgres not reachable while writing tenant '%s' - retrying in %ds",
+                    tenant_id, RETRY_DELAY_SECONDS)
+        time.sleep(RETRY_DELAY_SECONDS)
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+    except Exception as exc:
+        # Unknown: do not loop forever. Only the exception class is logged (no parameters).
+        log.error("Unexpected %s while writing tenant '%s' to registry. Dropping message.",
+                  type(exc).__name__, tenant_id)
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
 def main() -> None:
@@ -61,7 +97,8 @@ def main() -> None:
     log.info("tenant-command-service listening on '%s'", ROUTING_KEY_IN)
     try:
         channel.start_consuming()
-    except KeyboardInterrupt:        channel.stop_consuming()
+    except KeyboardInterrupt:
+        channel.stop_consuming()
 
     connection.close()
 
