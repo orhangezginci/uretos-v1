@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -127,9 +125,49 @@ services:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
     restart: unless-stopped
 
+  # Schreibt Maschinen in die TENANT-Datenbank:
+  # - SYSTEM_DB_URL: Registry-Lookup (connector_boxes, tenants) in der system-postgres
+  # - tenant-net: nötig, um die Tenant-Postgres-Container (tenant-<id>-postgres) zu erreichen
+  machine-command-service:
+    build: ./services/machine-command-service
+    container_name: uretos-machine-command-service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      system-postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
+      SYSTEM_DB_URL: "postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+
+  # Liest Maschinen aus der TENANT-Datenbank (Registry-Lookup in der system-postgres, nur lesend)
+  machine-query-service:
+    build: ./services/machine-query-service
+    container_name: uretos-machine-query-service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      system-postgres:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
+      SYSTEM_DB_URL: "postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+
 networks:
   default:
     name: uretos-core-net
+  # Fester Name: der tenant-provisioning-service hängt die Tenant-Container an dieses Netz
+  # (_ensure_network findet es dann). NICHT als "external: true" deklarieren.
+  tenant-net:
+    name: uretos-tenant-net
 
 volumes:
   system-postgres-data:
