@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uretOS CloudEvent v1.0 Specification",
+  "description": "Standardized CloudEvent envelope for all asynchronous message exchanges across uretOS services. This file is a documentation/validation copy local to this service - it is intentionally NOT imported from a shared package (hyper-decoupled principle).",
+  "type": "object",
+  "required": [
+    "specversion",
+    "id",
+    "source",
+    "type",
+    "datacontenttype",
+    "time",
+    "correlationid",
+    "messagetype",
+    "tenantid",
+    "data"
+  ],
+  "properties": {
+    "specversion": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "source": { "type": "string", "format": "uri-reference" },
+    "type": { "type": "string" },
+    "datacontenttype": { "type": "string", "const": "application/json" },
+    "time": { "type": "string", "format": "date-time" },
+    "correlationid": { "type": "string", "format": "uuid" },
+    "messagetype": { "type": "string", "enum": ["event", "command", "query"] },
+    "tenantid": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifies which tenant this message belongs to. Reserved value 'system' is used for super_admin-level operations such as tenant provisioning itself."
+    },
+    "subject": { "type": "string" },
+    "data": { "type": "object" }
+  }
+}
