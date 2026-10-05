@@ -20,7 +20,6 @@ _SCHEMA = json.loads(_SCHEMA_PATH.read_text())
 
 
 def build_envelope(
-    *,
     event_type: str,
     source: str,
     data: dict[str, Any],
