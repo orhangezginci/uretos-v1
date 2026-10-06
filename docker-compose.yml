@@ -161,6 +161,18 @@ services:
       - tenant-net
     restart: unless-stopped
 
+  shopfloor-stream-service:
+    build: ./services/shopfloor-stream-service
+    container_name: uretos-shopfloor-stream-service
+    ports:
+      - "8081:8081"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
+    restart: unless-stopped
+
 networks:
   default:
     name: uretos-core-net
