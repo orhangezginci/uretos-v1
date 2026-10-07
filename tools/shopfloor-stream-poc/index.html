@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>uretOS Shopfloor Stream POC</title>
+<style>
+  body {
+    background: #050608;
+    color: #e6f9ff;
+    font-family: "Courier New", monospace;
+    padding: 24px;
+  }
+  h1 { font-size: 16px; letter-spacing: 2px; color: #aaa; }
+  #controls { margin-bottom: 20px; }
+  input, button {
+    font-family: inherit;
+    background: #0a0e12;
+    color: #e6f9ff;
+    border: 1px solid #00e5ff;
+    padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  #status { margin-left: 12px; color: #6b8a94; font-size: 12px; }
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .card {
+    border: 1px solid #00e5ff;
+    background: rgba(10,14,18,0.8);
+    box-shadow: 0 0 12px 0 rgba(0,229,255,0.2);
+    padding: 14px 18px;
+    min-width: 220px;
+  }
+  .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 6px; }
+  .card .field { font-size: 12px; color: #9fd; margin-bottom: 2px; }
+  .card.flash { animation: flash 1s ease; }
+  @keyframes flash {
+    0% { box-shadow: 0 0 24px 4px #00e5ff; }
+    100% { box-shadow: 0 0 12px 0 rgba(0,229,255,0.2); }
+  }
+  #log {
+    margin-top: 24px;
+    font-size: 11px;
+    color: #556;
+    max-height: 200px;
+    overflow-y: auto;
+    border-top: 1px solid #222;
+    padding-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>URETOS · SHOPFLOOR STREAM POC</h1>
+
+<div id="controls">
+  <input id="tenantInput" value="test-tenant-e2e" />
+  <button onclick="connect()">Connect</button>
+  <span id="status">disconnected</span>
+</div>
+
+<div class="grid" id="machineGrid"></div>
+
+<div id="log"></div>
+
+<script>
+const STREAM_URL = "http://localhost:8081/v1/shopfloor/stream";
+let machines = {};
+let eventSource = null;
+
+function log(msg) {
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  el.prepend(line);
+}
+
+function renderGrid() {
+  const grid = document.getElementById("machineGrid");
+  grid.innerHTML = "";
+  Object.values(machines).forEach(m => {
+    const card = document.createElement("div");
+    card.className = "card" + (m._flash ? " flash" : "");
+    card.innerHTML = `
+      <div class="name">${m.name || m.machine_id}</div>
+      <div class="field">ID: ${m.machine_id}</div>
+      <div class="field">Box: ${m.box_id || "-"}</div>
+      <div class="field">Endpoint: ${m.endpoint_url || "-"}</div>
+    `;
+    grid.appendChild(card);
+    m._flash = false;
+  });
+}
+
+function connect() {
+  if (eventSource) {
+    eventSource.close();
+  }
+  const tenantId = document.getElementById("tenantInput").value.trim();
+  if (!tenantId) return;
+
+  machines = {};
+  renderGrid();
+  document.getElementById("status").textContent = "connecting...";
+
+  eventSource = new EventSource(`${STREAM_URL}?tenant_id=${encodeURIComponent(tenantId)}`);
+
+  eventSource.onopen = () => {
+    document.getElementById("status").textContent = "connected";
+    log("SSE connected for tenant " + tenantId);
+  };
+
+  eventSource.onerror = () => {
+    document.getElementById("status").textContent = "error/reconnecting";
+  };
+
+  eventSource.onmessage = (event) => {
+    const envelope = JSON.parse(event.data);
+    log("event: " + envelope.type);
+
+    if (envelope.type === "uretos.shopfloor.snapshot") {
+      (envelope.data.machines || []).forEach(m => { machines[m.machine_id] = m; });
+      renderGrid();
+    }
+
+    if (envelope.type === "uretos.machine.event.registered") {
+      (envelope.data.machines || []).forEach(m => {
+        machines[m.machine_id] = { ...machines[m.machine_id], ...m, _flash: true };
+      });
+      renderGrid();
+    }
+  };
+}
+</script>
+
+</body>
+</html>
