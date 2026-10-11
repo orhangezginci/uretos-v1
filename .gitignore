@@ -27,3 +27,7 @@ docker_compose_infografik.html
 ChatGPT Image*.png
 docker_compose_infografik.html
 ChatGPT Image*.png
+
+# AI / agent folders
+.agents/
+.claude/
