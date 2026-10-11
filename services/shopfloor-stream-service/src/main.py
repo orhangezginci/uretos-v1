@@ -48,6 +48,7 @@ KEEPALIVE_SECONDS = 20
 # Future telemetry events get added to this tuple once that stage starts.
 MACHINE_EVENT_ROUTING_KEYS = (
     "uretos.machine.event.registered",
+    "uretos.machine.event.status_changed",
 )
 
 app = Flask(__name__)

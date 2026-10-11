@@ -186,6 +186,8 @@ class MachineIdentity:
     serial: Optional[str] = None
     machine_type: Optional[str] = None
     software_version: Optional[str] = None
+    status: str = "ok"              # Neu: Initialer Status ('ok', 'warning', 'error')
+    error_code: Optional[str] = None # Neu: Optionaler Fehlercode bei Störung
     sources: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
@@ -227,6 +229,8 @@ class MachineIdentity:
             "serial": self.serial,
             "machine_type": self.machine_type,
             "software_version": self.software_version,
+            "status": self.status,       # Neu im Dictionary für den Autoscan
+            "error_code": self.error_code, # Neu im Dictionary
             "confidence": self.confidence,
             "sources": self.sources,
             "extra": self.extra,

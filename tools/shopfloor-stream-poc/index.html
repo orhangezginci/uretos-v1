@@ -32,10 +32,43 @@
     background: rgba(10,14,18,0.8);
     box-shadow: 0 0 12px 0 rgba(0,229,255,0.2);
     padding: 14px 18px;
-    min-width: 220px;
+    min-width: 240px;
   }
   .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 6px; }
   .card .field { font-size: 12px; color: #9fd; margin-bottom: 2px; }
+  
+  /* Status-Styling */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed #1a2634;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .status-dot.ok { background: #3fb950; box-shadow: 0 0 6px rgba(63, 185, 80, 0.6); }
+  .status-dot.warning { background: #d29922; box-shadow: 0 0 6px rgba(210, 153, 34, 0.6); }
+  .status-dot.error { background: #f85149; box-shadow: 0 0 6px rgba(248, 81, 73, 0.6); }
+
+  .status-text.ok { color: #3fb950; }
+  .status-text.warning { color: #d29922; }
+  .status-text.error { color: #f85149; }
+
+  .error-code {
+    font-size: 11px;
+    color: #f85149;
+    margin-top: 4px;
+    background: rgba(248, 81, 73, 0.1);
+    padding: 2px 4px;
+    border-radius: 2px;
+  }
+
   .card.flash { animation: flash 1s ease; }
   @keyframes flash {
     0% { box-shadow: 0 0 24px 4px #00e5ff; }
@@ -82,13 +115,25 @@ function renderGrid() {
   const grid = document.getElementById("machineGrid");
   grid.innerHTML = "";
   Object.values(machines).forEach(m => {
+    const status = (m.status || 'ok').toLowerCase();
     const card = document.createElement("div");
     card.className = "card" + (m._flash ? " flash" : "");
+    
+    let errorHtml = '';
+    if (m.error_code) {
+      errorHtml = `<div class="error-code">⚠️ ${m.error_code}</div>`;
+    }
+
     card.innerHTML = `
       <div class="name">${m.name || m.machine_id}</div>
       <div class="field">ID: ${m.machine_id}</div>
       <div class="field">Box: ${m.box_id || "-"}</div>
       <div class="field">Endpoint: ${m.endpoint_url || "-"}</div>
+      <div class="status-row">
+        <span class="status-dot ${status}"></span>
+        <span class="field status-text ${status}">STATUS: ${status.toUpperCase()}</span>
+      </div>
+      ${errorHtml}
     `;
     grid.appendChild(card);
     m._flash = false;
@@ -131,6 +176,18 @@ function connect() {
         machines[m.machine_id] = { ...machines[m.machine_id], ...m, _flash: true };
       });
       renderGrid();
+    }
+
+    // Live-Update des Status bei Eintreffen eines Status-Change-Events
+    if (envelope.type === "uretos.machine.event.status_changed") {
+      const update = envelope.data;
+      if (machines[update.machine_id]) {
+        machines[update.machine_id].status = update.status;
+        machines[update.machine_id].error_code = update.error_code || null;
+        machines[update.machine_id]._flash = true;
+        renderGrid();
+        log(`Status update for ${update.machine_id}: ${update.status}`);
+      }
     }
   };
 }

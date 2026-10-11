@@ -367,7 +367,53 @@ def list_tenants():
         return jsonify({"error": "Timed out waiting for query result"}), 504
     return jsonify(envelope["data"]["tenants"]), 200
 
+@app.route("/v1/machines/<machine_id>/status", methods=["PATCH"])
+def update_machine_status(machine_id: str):
+    payload = request.get_json(silent=True) or {}
+    status = payload.get("status")  # "ok", "warning", "error"
+    error_code = payload.get("error_code")
+    tenant_id = payload.get("tenant_id")
 
+    if not status or not tenant_id:
+        return jsonify({"error": "status and tenant_id are required"}), 400
+
+    if status not in ("ok", "warning", "error"):
+        return jsonify({"error": "Invalid status value. Must be 'ok', 'warning', or 'error'"}), 400
+
+    log.info("Status update request for machine_id=%s, status=%s", machine_id, status)
+
+    # CloudEvent für den Statuswechsel erzeugen und über RabbitMQ publizieren
+    envelope_out = build_envelope(
+        event_type="uretos.machine.event.status_changed",
+        source=SOURCE,
+        data={
+            "machine_id": machine_id,
+            "tenant_id": tenant_id,
+            "status": status,
+            "error_code": error_code,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+        tenant_id=tenant_id,
+        messagetype="event",
+    )
+
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=True)
+        channel.basic_publish(
+            exchange=EXCHANGE,
+            routing_key="uretos.machine.event.status_changed",
+            body=json.dumps(envelope_out).encode("utf-8"),
+            properties=pika.BasicProperties(content_type="application/json"),
+        )
+        connection.close()
+    except Exception as exc:
+        log.error("Failed to publish machine status event: %s", exc)
+        return jsonify({"error": "Internal broker error"}), 500
+
+    return jsonify({"success": True, "machine_id": machine_id, "status": status}), 200
+    
 @app.route("/healthz", methods=["GET"])
 def healthz():
     return jsonify({"status": "ok"}), 200

@@ -2,24 +2,19 @@
 Per-tenant infrastructure provisioning.
 
 Talks to the Docker Engine API *through* docker-socket-proxy (never the raw
-socket) to create one isolated Postgres container and one isolated Redis
-container per tenant. Also creates an isolated RabbitMQ vhost + user per
-tenant via the RabbitMQ Management HTTP API, for messaging-level isolation
-on top of the DB-level isolation.
-
-NOTE on scope: this is a pragmatic, right-sized implementation for the
-"technically impossible to leak data between tenants" trust story - not a
-hardened, audited production security design. Secrets are generated
-per-tenant but stored in plain env vars here as a starting point; a real
-secrets manager should replace that before this touches real customer data.
+socket) to create one isolated Postgres container (with TimescaleDB enabled)
+and one isolated Redis container per tenant. Also creates an isolated RabbitMQ
+vhost + user per tenant via the RabbitMQ Management HTTP API.
 """
 from __future__ import annotations
 
 import os
 import re
 import secrets
+import time
 
 import docker
+import psycopg
 import requests
 
 DOCKER_HOST = "tcp://docker-socket-proxy:2375"
@@ -49,15 +44,25 @@ def _client() -> docker.DockerClient:
     return docker.DockerClient(base_url=DOCKER_HOST)
 
 
+def _ensure_timescale_extension(pg_host: str, db_name: str, user: str, password: str) -> None:
+    """Wartet kurz, bis Postgres bereit ist, und aktiviert die TimescaleDB-Extension."""
+    conn_str = f"host={pg_host} dbname={db_name} user={user} password={password}"
+    for _ in range(15):
+        try:
+            with psycopg.connect(conn_str) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+                    conn.commit()
+            return
+        except Exception:
+            time.sleep(1)
+    raise ProvisioningError("Konnte TimescaleDB-Extension nicht in der Tenant-DB aktivieren (Timeout)")
+
+
 def provision_tenant_infrastructure(tenant_id: str) -> dict:
     """
-    Creates an isolated Postgres + Redis container pair for one tenant.
-    Returns connection info that the provisioning-event's data payload
-    can carry onward (e.g. to a tenant registry / config store).
-
-    Idempotent-ish: if containers with this tenant's names already exist,
-    it raises rather than silently reusing them, since silently reusing
-    infra for a "create tenant" command is a dangerous default.
+    Creates an isolated Postgres (TimescaleDB) + Redis container pair for one tenant.
+    Returns connection info for the provisioning-event's data payload.
     """
     _validate_tenant_id(tenant_id)
     client = _client()
@@ -79,7 +84,7 @@ def provision_tenant_infrastructure(tenant_id: str) -> dict:
 
     db_password = secrets.token_urlsafe(24)
     pg_container = client.containers.run(
-        image="postgres:16-alpine",
+        image="timescaledb/timescaledb:latest-pg16",
         name=pg_name,
         detach=True,
         network=NETWORK_NAME,
@@ -91,6 +96,9 @@ def provision_tenant_infrastructure(tenant_id: str) -> dict:
         volumes={f"{pg_name}-data": {"bind": "/var/lib/postgresql/data", "mode": "rw"}},
         restart_policy={"Name": "unless-stopped"},
     )
+
+    # TimescaleDB-Extension direkt nach dem Start in der Tenant-DB aktivieren
+    _ensure_timescale_extension(pg_name, f"tenant_{tenant_id}", f"tenant_{tenant_id}", db_password)
 
     redis_container = client.containers.run(
         image="redis:7-alpine",
@@ -132,8 +140,7 @@ def _ensure_network(client: docker.DockerClient) -> None:
 def provision_tenant_rabbitmq(tenant_id: str) -> dict:
     """
     Creates an isolated RabbitMQ vhost + a user scoped exclusively to it,
-    via the Management HTTP API (not AMQP - vhost/user management isn't
-    part of the AMQP protocol itself).
+    via the Management HTTP API.
     """
     auth = (RABBITMQ_ADMIN_USER, RABBITMQ_ADMIN_PASSWORD)
     vhost_name = f"tenant-{tenant_id}"
