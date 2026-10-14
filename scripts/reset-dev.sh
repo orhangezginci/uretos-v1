@@ -15,3 +15,8 @@ volumes=$(docker volume ls -q --filter "name=^tenant-")
 if [ -n "$volumes" ]; then
   docker volume rm $volumes
 fi
+
+images=$(docker images -q "timescale/timescaledb" 2>/dev/null || true)
+if [ -n "$images" ]; then
+  docker rmi -f $images || true
+fi

@@ -32,7 +32,8 @@
     background: rgba(10,14,18,0.8);
     box-shadow: 0 0 12px 0 rgba(0,229,255,0.2);
     padding: 14px 18px;
-    min-width: 240px;
+    min-width: 300px;
+    max-width: 400px;
   }
   .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 6px; }
   .card .field { font-size: 12px; color: #9fd; margin-bottom: 2px; }
@@ -59,6 +60,43 @@
   .status-text.ok { color: #3fb950; }
   .status-text.warning { color: #d29922; }
   .status-text.error { color: #f85149; }
+
+  /* Timeline / Tilesbar Chart Styling */
+  .timeline-container {
+    margin-top: 12px;
+    border-top: 1px solid #1a2634;
+    padding-top: 8px;
+  }
+  .timeline-label {
+    font-size: 10px;
+    color: #6b8a94;
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .timeline-tilesbar {
+    display: flex;
+    gap: 3px;
+    height: 16px;
+    width: 100%;
+    background: #050608;
+    padding: 2px;
+    border: 1px solid #1a2634;
+    border-radius: 2px;
+    box-sizing: border-box;
+  }
+  .tile {
+    flex: 1;
+    height: 100%;
+    border-radius: 1px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .tile:hover { opacity: 0.7; }
+  .tile.ok { background: #3fb950; }
+  .tile.warning { background: #d29922; }
+  .tile.error { background: #f85149; }
+  .tile.unknown { background: #333; }
 
   .error-code {
     font-size: 11px;
@@ -87,7 +125,7 @@
 </head>
 <body>
 
-<h1>URETOS · SHOPFLOOR STREAM POC</h1>
+<h1>uretOS · SHOPFLOOR STREAM POC</h1>
 
 <div id="controls">
   <input id="tenantInput" value="test-tenant-e2e" />
@@ -101,6 +139,7 @@
 
 <script>
 const STREAM_URL = "http://localhost:8081/v1/shopfloor/stream";
+const HISTORY_URL = "http://localhost:8888/api/v1/machines"; // Über Traefik / BFF
 let machines = {};
 let eventSource = null;
 
@@ -111,13 +150,51 @@ function log(msg) {
   el.prepend(line);
 }
 
+async function fetchMachineHistory(tenantId, machineId, cardElement) {
+  try {
+    const response = await fetch(`${HISTORY_URL}/${machineId}/history?limit=15`, {
+      headers: { "X-Tenant-ID": tenantId }
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    
+    const historyContainer = cardElement.querySelector('.timeline-tilesbar');
+    if (!historyContainer) return;
+    historyContainer.innerHTML = "";
+
+    const historyItems = data.history || [];
+    if (historyItems.length === 0) {
+      historyContainer.innerHTML = '<div style="font-size:9px; color:#556; text-align:center; width:100%;">Keine Historie</div>';
+      return;
+    }
+
+    // Älteste bis neueste sortieren für den Zeitstrahl von links nach rechts
+    historyItems.reverse().forEach(item => {
+      const tile = document.createElement("div");
+      const statusClass = (item.status || 'unknown').toLowerCase();
+      tile.className = `tile ${statusClass}`;
+      
+      const timeStr = new Date(item.time).toLocaleTimeString();
+      const errStr = item.error_code ? ` (${item.error_code})` : '';
+      tile.title = `${timeStr} - Status: ${item.status.toUpperCase()}${errStr}`;
+      
+      historyContainer.appendChild(tile);
+    });
+  } catch (err) {
+    console.error("Fehler beim Laden der Historie für", machineId, err);
+  }
+}
+
 function renderGrid() {
   const grid = document.getElementById("machineGrid");
+  const tenantId = document.getElementById("tenantInput").value.trim();
+  
   grid.innerHTML = "";
   Object.values(machines).forEach(m => {
     const status = (m.status || 'ok').toLowerCase();
     const card = document.createElement("div");
     card.className = "card" + (m._flash ? " flash" : "");
+    card.id = `card-${m.machine_id}`;
     
     let errorHtml = '';
     if (m.error_code) {
@@ -128,15 +205,26 @@ function renderGrid() {
       <div class="name">${m.name || m.machine_id}</div>
       <div class="field">ID: ${m.machine_id}</div>
       <div class="field">Box: ${m.box_id || "-"}</div>
-      <div class="field">Endpoint: ${m.endpoint_url || "-"}</div>
       <div class="status-row">
         <span class="status-dot ${status}"></span>
         <span class="field status-text ${status}">STATUS: ${status.toUpperCase()}</span>
       </div>
       ${errorHtml}
+      <div class="timeline-container">
+        <div class="timeline-label">
+          <span>Status-Historie (letzte Einträge)</span>
+          <span>live &rarr;</span>
+        </div>
+        <div class="timeline-tilesbar">
+          <div style="font-size:9px; color:#556; text-align:center; width:100%;">Lade...</div>
+        </div>
+      </div>
     `;
     grid.appendChild(card);
     m._flash = false;
+
+    // Historie asynchron per BFF-API laden
+    fetchMachineHistory(tenantId, m.machine_id, card);
   });
 }
 
@@ -164,7 +252,6 @@ function connect() {
 
   eventSource.onmessage = (event) => {
     const envelope = JSON.parse(event.data);
-    log("event: " + envelope.type);
 
     if (envelope.type === "uretos.shopfloor.snapshot") {
       (envelope.data.machines || []).forEach(m => { machines[m.machine_id] = m; });
@@ -178,7 +265,6 @@ function connect() {
       renderGrid();
     }
 
-    // Live-Update des Status bei Eintreffen eines Status-Change-Events
     if (envelope.type === "uretos.machine.event.status_changed") {
       const update = envelope.data;
       if (machines[update.machine_id]) {

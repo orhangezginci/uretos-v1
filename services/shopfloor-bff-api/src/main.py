@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>uretOS Shopfloor Stream POC</title>
+<style>
+  body {
+    background: #050608;
+    color: #e6f9ff;
+    font-family: "Courier New", monospace;
+    padding: 24px;
+  }
+  h1 { font-size: 16px; letter-spacing: 2px; color: #aaa; }
+  #controls { margin-bottom: 20px; }
+  input, button {
+    font-family: inherit;
+    background: #0a0e12;
+    color: #e6f9ff;
+    border: 1px solid #00e5ff;
+    padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  #status { margin-left: 12px; color: #6b8a94; font-size: 12px; }
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .card {
+    border: 1px solid #00e5ff;
+    background: rgba(10,14,18,0.8);
+    box-shadow: 0 0 12px 0 rgba(0,229,255,0.2);
+    padding: 14px 18px;
+    min-width: 320px;
+    max-width: 420px;
+  }
+  .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 6px; }
+  .card .field { font-size: 12px; color: #9fd; margin-bottom: 2px; }
+  
+  /* Status-Styling */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed #1a2634;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .status-dot.ok { background: #3fb950; box-shadow: 0 0 6px rgba(63, 185, 80, 0.6); }
+  .status-dot.warning { background: #d29922; box-shadow: 0 0 6px rgba(210, 153, 34, 0.6); }
+  .status-dot.error { background: #f85149; box-shadow: 0 0 6px rgba(248, 81, 73, 0.6); }
+
+  .status-text.ok { color: #3fb950; }
+  .status-text.warning { color: #d29922; }
+  .status-text.error { color: #f85149; }
+
+  /* Timeline / Tilesbar Chart Styling */
+  .timeline-container {
+    margin-top: 12px;
+    border-top: 1px solid #1a2634;
+    padding-top: 8px;
+  }
+  .timeline-label {
+    font-size: 10px;
+    color: #6b8a94;
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .timeline-tilesbar {
+    display: flex;
+    gap: 3px;
+    height: 18px;
+    width: 100%;
+    background: #050608;
+    padding: 2px;
+    border: 1px solid #1a2634;
+    border-radius: 2px;
+    box-sizing: border-box;
+  }
+  .tile {
+    flex: 1;
+    height: 100%;
+    border-radius: 1px;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+  }
+  .tile:hover { opacity: 0.8; transform: scaleY(1.15); }
+  .tile.ok { background: #3fb950; }
+  .tile.warning { background: #d29922; }
+  .tile.error { background: #f85149; }
+  .tile.unknown { background: #333; }
+  
+  /* Aktuelle Live-Tile ganz rechts hervorheben */
+  .tile.live {
+    border: 1px solid #00e5ff;
+  }
+
+  .error-code {
+    font-size: 11px;
+    color: #f85149;
+    margin-top: 4px;
+    background: rgba(248, 81, 73, 0.1);
+    padding: 2px 4px;
+    border-radius: 2px;
+  }
+
+  .card.flash { animation: flash 1s ease; }
+  @keyframes flash {
+    0% { box-shadow: 0 0 24px 4px #00e5ff; }
+    100% { box-shadow: 0 0 12px 0 rgba(0,229,255,0.2); }
+  }
+  #log {
+    margin-top: 24px;
+    font-size: 11px;
+    color: #556;
+    max-height: 200px;
+    overflow-y: auto;
+    border-top: 1px solid #222;
+    padding-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>uretOS · SHOPFLOOR STREAM POC</h1>
+
+<div id="controls">
+  <input id="tenantInput" value="test-tenant-e2e" />
+  <button onclick="connect()">Connect</button>
+  <span id="status">disconnected</span>
+</div>
+
+<div class="grid" id="machineGrid"></div>
+
+<div id="log"></div>
+
+<script>
+const STREAM_URL = "http://localhost:8081/v1/shopfloor/stream";
+const HISTORY_URL = "http://localhost:8888/api/v1/machines";
+let machines = {};
+let eventSource = null;
+
+function log(msg) {
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  el.prepend(line);
+}
+
+async function fetchMachineHistory(tenantId, machineId, cardElement, currentStatus, currentErrorCode) {
+  try {
+    const response = await fetch(`${HISTORY_URL}/${machineId}/history?limit=14`, {
+      headers: { "X-Tenant-ID": tenantId }
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    
+    const historyContainer = cardElement.querySelector('.timeline-tilesbar');
+    if (!historyContainer) return;
+    historyContainer.innerHTML = "";
+
+    const historyItems = data.history || [];
+
+    // 1. Historische Kacheln zuerst einfügen (von alt nach neu sortiert, damit links die Vergangenheit liegt)
+    const sortedHistory = [...historyItems].reverse();
+    sortedHistory.forEach((item, index) => {
+      const tile = document.createElement("div");
+      const statusClass = (item.status || 'unknown').toLowerCase();
+      tile.className = `tile ${statusClass}`;
+      
+      const startTime = new Date(item.time);
+      const startTimeStr = startTime.toLocaleTimeString();
+      const startDateStr = startTime.toLocaleDateString();
+      const errStr = item.error_code ? ` | Fehler: ${item.error_code}` : '';
+
+      tile.title = `Historie Periode #${index + 1}\nZeitpunkt: ${startDateStr} ${startTimeStr}\nStatus: ${item.status.toUpperCase()}${errStr}`;
+      
+      historyContainer.appendChild(tile);
+    });
+
+    // 2. Aktuelle Live-Status Kachel ganz am Ende (ganz rechts) hinzufügen
+    const liveTile = document.createElement("div");
+    const liveStatusClass = (currentStatus || 'ok').toLowerCase();
+    liveTile.className = `tile ${liveStatusClass} live`;
+    const liveTimeStr = new Date().toLocaleTimeString();
+    const liveErrStr = currentErrorCode ? ` [Fehler: ${currentErrorCode}]` : '';
+    liveTile.title = `[LIVE / AKTUELL] Zeit: ${liveTimeStr} | Status: ${currentStatus.toUpperCase()}${liveErrStr}`;
+    historyContainer.appendChild(liveTile);
+
+    if (sortedHistory.length === 0 && !currentStatus) {
+      historyContainer.innerHTML = '<div style="font-size:9px; color:#556; text-align:center; width:100%;">Keine Historie</div>';
+    }
+  } catch (err) {
+    console.error("Fehler beim Laden der Historie für", machineId, err);
+  }
+}
+
+function renderGrid() {
+  const grid = document.getElementById("machineGrid");
+  const tenantId = document.getElementById("tenantInput").value.trim();
+  
+  grid.innerHTML = "";
+  Object.values(machines).forEach(m => {
+    const status = (m.status || 'ok').toLowerCase();
+    const card = document.createElement("div");
+    card.className = "card" + (m._flash ? " flash" : "");
+    card.id = `card-${m.machine_id}`;
+    
+    let errorHtml = '';
+    if (m.error_code) {
+      errorHtml = `<div class="error-code">⚠️ ${m.error_code}</div>`;
+    }
+
+    card.innerHTML = `
+      <div class="name">${m.name || m.machine_id}</div>
+      <div class="field">ID: ${m.machine_id}</div>
+      <div class="field">Box: ${m.box_id || "-"}</div>
+      <div class="status-row">
+        <span class="status-dot ${status}"></span>
+        <span class="field status-text ${status}">STATUS: ${status.toUpperCase()}</span>
+      </div>
+      ${errorHtml}
+      <div class="timeline-container">
+        <div class="timeline-label">
+          <span>Vergangenheit &larr; &rarr; Gegenwart (Live)</span>
+          <span>(Hover für Details)</span>
+        </div>
+        <div class="timeline-tilesbar">
+          <div style="font-size:9px; color:#556; text-align:center; width:100%;">Lade...</div>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+    m._flash = false;
+
+    // Historie laden und aktuellen Status als letzte Kachel (rechts) übergeben
+    fetchMachineHistory(tenantId, m.machine_id, card, m.status, m.error_code);
+  });
+}
+
+function connect() {
+  if (eventSource) {
+    eventSource.close();
+  }
+  const tenantId = document.getElementById("tenantInput").value.trim();
+  if (!tenantId) return;
+
+  machines = {};
+  renderGrid();
+  document.getElementById("status").textContent = "connecting...";
+
+  eventSource = new EventSource(`${STREAM_URL}?tenant_id=${encodeURIComponent(tenantId)}`);
+
+  eventSource.onopen = () => {
+    document.getElementById("status").textContent = "connected";
+    log("SSE connected for tenant " + tenantId);
+  };
+
+  eventSource.onerror = () => {
+    document.getElementById("status").textContent = "error/reconnecting";
+  };
+
+  eventSource.onmessage = (event) => {
+    const envelope = JSON.parse(event.data);
+
+    if (envelope.type === "uretos.shopfloor.snapshot") {
+      (envelope.data.machines || []).forEach(m => { machines[m.machine_id] = m; });
+      renderGrid();
+    }
+
+    if (envelope.type === "uretos.machine.event.registered") {
+      (envelope.data.machines || []).forEach(m => {
+        machines[m.machine_id] = { ...machines[m.machine_id], ...m, _flash: true };
+      });
+      renderGrid();
+    }
+
+    if (envelope.type === "uretos.machine.event.status_changed") {
+      const update = envelope.data;
+      if (machines[update.machine_id]) {
+        machines[update.machine_id].status = update.status;
+        machines[update.machine_id].error_code = update.error_code || null;
+        machines[update.machine_id]._flash = true;
+        renderGrid();
+        log(`Status update for ${update.machine_id}: ${update.status}`);
+      }
+    }
+  };
+}
+</script>
+
+</body>
+</html>

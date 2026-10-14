@@ -2,20 +2,22 @@
 Per-tenant infrastructure provisioning.
 
 Talks to the Docker Engine API *through* docker-socket-proxy (never the raw
-socket) to create one isolated Postgres container (with TimescaleDB enabled)
-and one isolated Redis container per tenant. Also creates an isolated RabbitMQ
-vhost + user per tenant via the RabbitMQ Management HTTP API.
+socket) to create one isolated Postgres container (with TimescaleDB enabled 
+via /docker-entrypoint-initdb.d/init-extension.sql) and one isolated Redis 
+container per tenant. Also creates an isolated RabbitMQ vhost + user per 
+tenant via the RabbitMQ Management HTTP API.
 """
 from __future__ import annotations
 
 import os
 import re
 import secrets
-import time
+import logging
 
 import docker
-import psycopg
 import requests
+
+logger = logging.getLogger("tenant-provisioning")
 
 DOCKER_HOST = "tcp://docker-socket-proxy:2375"
 NETWORK_NAME = "uretos-tenant-net"
@@ -44,21 +46,6 @@ def _client() -> docker.DockerClient:
     return docker.DockerClient(base_url=DOCKER_HOST)
 
 
-def _ensure_timescale_extension(pg_host: str, db_name: str, user: str, password: str) -> None:
-    """Wartet kurz, bis Postgres bereit ist, und aktiviert die TimescaleDB-Extension."""
-    conn_str = f"host={pg_host} dbname={db_name} user={user} password={password}"
-    for _ in range(15):
-        try:
-            with psycopg.connect(conn_str) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
-                    conn.commit()
-            return
-        except Exception:
-            time.sleep(1)
-    raise ProvisioningError("Konnte TimescaleDB-Extension nicht in der Tenant-DB aktivieren (Timeout)")
-
-
 def provision_tenant_infrastructure(tenant_id: str) -> dict:
     """
     Creates an isolated Postgres (TimescaleDB) + Redis container pair for one tenant.
@@ -82,9 +69,12 @@ def provision_tenant_infrastructure(tenant_id: str) -> dict:
 
     _ensure_network(client)
 
+    # Absoluten Pfad zum im app-Verzeichnis liegenden init-extension.sql ermitteln
+    init_sql_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "init-extension.sql"))
+
     db_password = secrets.token_urlsafe(24)
     pg_container = client.containers.run(
-        image="timescaledb/timescaledb:latest-pg16",
+        image="timescale/timescaledb:latest-pg16",
         name=pg_name,
         detach=True,
         network=NETWORK_NAME,
@@ -93,12 +83,15 @@ def provision_tenant_infrastructure(tenant_id: str) -> dict:
             "POSTGRES_PASSWORD": db_password,
             "POSTGRES_DB": f"tenant_{tenant_id}",
         },
-        volumes={f"{pg_name}-data": {"bind": "/var/lib/postgresql/data", "mode": "rw"}},
+        volumes={
+            f"{pg_name}-data": {"bind": "/var/lib/postgresql/data", "mode": "rw"},
+            init_sql_path: {"bind": "/docker-entrypoint-initdb.d/init-extension.sql", "mode": "ro"},
+        },
         restart_policy={"Name": "unless-stopped"},
     )
 
-    # TimescaleDB-Extension direkt nach dem Start in der Tenant-DB aktivieren
-    _ensure_timescale_extension(pg_name, f"tenant_{tenant_id}", f"tenant_{tenant_id}", db_password)
+    # Die TimescaleDB-Extension wird nun nativ beim ersten Postgres-Start 
+    # durch das gemountete Init-Skript im Container ausgeführt.
 
     redis_container = client.containers.run(
         image="redis:7-alpine",

@@ -31,6 +31,8 @@ services:
   system-postgres:
     image: postgres:16-alpine
     container_name: uretos-system-postgres
+    ports:
+    - "5432:5432"
     environment:
       POSTGRES_USER: uretos_system
       POSTGRES_PASSWORD: uretos_system_dev_pass
@@ -125,9 +127,6 @@ services:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
     restart: unless-stopped
 
-  # Schreibt Maschinen in die TENANT-Datenbank:
-  # - SYSTEM_DB_URL: Registry-Lookup (connector_boxes, tenants) in der system-postgres
-  # - tenant-net: nötig, um die Tenant-Postgres-Container (tenant-<id>-postgres) zu erreichen
   machine-command-service:
     build: ./services/machine-command-service
     container_name: uretos-machine-command-service
@@ -144,7 +143,6 @@ services:
       - tenant-net
     restart: unless-stopped
 
-  # Liest Maschinen aus der TENANT-Datenbank (Registry-Lookup in der system-postgres, nur lesend)
   machine-query-service:
     build: ./services/machine-query-service
     container_name: uretos-machine-query-service
@@ -172,12 +170,103 @@ services:
     environment:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
     restart: unless-stopped
+  
+  timescale-writer-service:
+    build:
+      context: ./services/timescale-writer-service
+      dockerfile: Dockerfile
+    container_name: timescale-writer-service
+    environment:
+      - RABBITMQ_URL=amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/
+      - SYSTEM_DB_URL=postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      system-postgres:
+        condition: service_healthy
+
+  timescale-query-service:
+    build:
+      context: .
+      dockerfile: services/timescale-query-service/Dockerfile
+    container_name: uretos-timescale-query
+    environment:
+      - RABBITMQ_URL=amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/
+      - SYSTEM_DB_URL=postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      system-postgres:
+        condition: service_healthy
+
+  shopfloor-bff-api:
+    build:
+      context: .
+      dockerfile: services/shopfloor-bff-api/Dockerfile
+    container_name: uretos-shopfloor-bff-api
+    environment:
+      - RABBITMQ_URL=amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.shopfloor-bff.rule=PathPrefix(`/api/v1/machines`)"
+      - "traefik.http.routers.shopfloor-bff.entrypoints=web"
+      - "traefik.http.services.shopfloor-bff.loadbalancer.server.port=8080"
+      - "traefik.docker.network=uretos-core-net"
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      timescale-query-service:
+        condition: service_started
+
+  traefik:
+    image: traefik:v3.6
+    container_name: uretos-traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=http://uretos-docker-proxy:2375"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "8888:80"
+      - "8090:8080"
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+    depends_on:
+      - docker-socket-proxy
+  connector-box-poller:
+    build: ./services/connector-box-poller
+    container_name: uretos-connector-box-poller
+    environment:
+      - GATEWAY_URL=http://gateway-api:8080
+      - OPC_UA_HOST=opcua-server
+      - OPC_UA_PORT=4840
+      - POLL_INTERVAL_SECONDS=5
+      - TENANT_ID=test-tenant-e2e
+    networks:
+      - default
+    restart: unless-stopped
+    depends_on:
+      - gateway-api
+      - opcua-server
 
 networks:
   default:
     name: uretos-core-net
-  # Fester Name: der tenant-provisioning-service hängt die Tenant-Container an dieses Netz
-  # (_ensure_network findet es dann). NICHT als "external: true" deklarieren.
   tenant-net:
     name: uretos-tenant-net
 
