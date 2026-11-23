@@ -2,16 +2,19 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>uretOS Shopfloor Stream POC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>uretOS · Shopfloor Stream POC</title>
 <style>
+  * { box-sizing: border-box; }
   body {
     background: #050608;
     color: #e6f9ff;
-    font-family: "Courier New", monospace;
+    font-family: "Courier New", Courier, monospace;
     padding: 24px;
+    margin: 0;
   }
-  h1 { font-size: 16px; letter-spacing: 2px; color: #aaa; }
-  #controls { margin-bottom: 20px; }
+  h1 { font-size: 16px; letter-spacing: 2px; color: #aaa; margin-top: 0; }
+  #controls { margin-bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   input, button {
     font-family: inherit;
     background: #0a0e12;
@@ -20,83 +23,73 @@
     padding: 6px 10px;
   }
   button { cursor: pointer; }
-  #status { margin-left: 12px; color: #6b8a94; font-size: 12px; }
-  .grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
-    margin-top: 20px;
+  button:hover { background: #00e5ff; color: #050608; }
+  #status { margin-left: 8px; color: #6b8a94; font-size: 12px; }
+  #summary { font-size: 12px; color: #9fd; margin-bottom: 16px; min-height: 16px; }
+  #summary .sep { color: #334; margin: 0 8px; }
+
+  /* Connector Box Containers */
+  .box {
+    border: 1px solid #1f3a44;
+    background: rgba(10,14,18,0.6);
+    padding: 14px 16px 18px;
+    margin-bottom: 22px;
   }
+  .box-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid #1a2634;
+  }
+  .box-title { color: #00e5ff; font-size: 15px; letter-spacing: 1px; font-weight: bold; }
+  .box-meta { font-size: 11px; color: #6b8a94; }
+  .box-count { margin-left: auto; font-size: 12px; color: #9fd; }
+  .box-count.full { color: #d29922; }
+  .empty { font-size: 12px; color: #556; padding: 6px 0; }
+
+  /* Maschinen-Grid & Karten */
+  .grid { display: flex; flex-wrap: wrap; gap: 16px; }
   .card {
     border: 1px solid #00e5ff;
     background: rgba(10,14,18,0.8);
     box-shadow: 0 0 12px 0 rgba(0,229,255,0.2);
     padding: 14px 18px;
-    min-width: 300px;
-    max-width: 400px;
+    min-width: 280px;
+    max-width: 360px;
+    flex: 1 1 280px;
   }
-  .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 6px; }
-  .card .field { font-size: 12px; color: #9fd; margin-bottom: 2px; }
-  
-  /* Status-Styling */
+  .card.error { border-color: #f85149; box-shadow: 0 0 12px 0 rgba(248,81,73,0.25); }
+  .card.warning { border-color: #d29922; }
+  .card.unknown { border-color: #334; box-shadow: none; }
+  .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 8px; font-weight: bold; word-break: break-word; }
+  .card .field { font-size: 12px; color: #9fd; margin-bottom: 3px; word-break: break-word; }
+  .card .field .k { color: #6b8a94; display: inline-block; min-width: 95px; }
+  .card .tel { color: #00e5ff; }
+  .card .mid { font-size: 10px; color: #556; margin-top: 8px; word-break: break-all; }
+
+  /* Statusanzeige */
   .status-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 8px;
+    margin-top: 10px;
     padding-top: 6px;
     border-top: 1px dashed #1a2634;
   }
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-  .status-dot.ok { background: #3fb950; box-shadow: 0 0 6px rgba(63, 185, 80, 0.6); }
-  .status-dot.warning { background: #d29922; box-shadow: 0 0 6px rgba(210, 153, 34, 0.6); }
-  .status-dot.error { background: #f85149; box-shadow: 0 0 6px rgba(248, 81, 73, 0.6); }
-
-  .status-text.ok { color: #3fb950; }
-  .status-text.warning { color: #d29922; }
-  .status-text.error { color: #f85149; }
-
-  /* Timeline / Tilesbar Chart Styling */
-  .timeline-container {
-    margin-top: 12px;
-    border-top: 1px solid #1a2634;
-    padding-top: 8px;
-  }
-  .timeline-label {
-    font-size: 10px;
-    color: #6b8a94;
-    margin-bottom: 4px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .timeline-tilesbar {
-    display: flex;
-    gap: 3px;
-    height: 16px;
-    width: 100%;
-    background: #050608;
-    padding: 2px;
-    border: 1px solid #1a2634;
-    border-radius: 2px;
-    box-sizing: border-box;
-  }
-  .tile {
-    flex: 1;
-    height: 100%;
-    border-radius: 1px;
-    cursor: pointer;
-    transition: opacity 0.2s;
-  }
-  .tile:hover { opacity: 0.7; }
-  .tile.ok { background: #3fb950; }
-  .tile.warning { background: #d29922; }
-  .tile.error { background: #f85149; }
-  .tile.unknown { background: #333; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.ok { background: #3fb950; box-shadow: 0 0 6px rgba(63, 185, 80, 0.6); }
+  .dot.warning { background: #d29922; box-shadow: 0 0 6px rgba(210, 153, 34, 0.6); }
+  .dot.error { background: #f85149; box-shadow: 0 0 6px rgba(248, 81, 73, 0.6); }
+  .dot.unknown { background: #556; }
+  .txt.ok { color: #3fb950; }
+  .txt.warning { color: #d29922; }
+  .txt.error { color: #f85149; }
+  .txt.unknown { color: #6b8a94; }
+  .status-row .field { margin: 0; }
+  .status-row .when { margin-left: auto; font-size: 10px; color: #556; }
 
   .error-code {
     font-size: 11px;
@@ -116,7 +109,7 @@
     margin-top: 24px;
     font-size: 11px;
     color: #556;
-    max-height: 200px;
+    max-height: 180px;
     overflow-y: auto;
     border-top: 1px solid #222;
     padding-top: 10px;
@@ -125,158 +118,298 @@
 </head>
 <body>
 
-<h1>uretOS · SHOPFLOOR STREAM POC</h1>
+<h1>uretOS · SHOPFLOOR COCKPIT STAMMDATEN &amp; STATUS POC</h1>
 
 <div id="controls">
-  <input id="tenantInput" value="test-tenant-e2e" />
-  <button onclick="connect()">Connect</button>
-  <span id="status">disconnected</span>
+  <input id="tenantInput" value="schwarzwald-metallwaren" placeholder="Tenant ID" />
+  <button onclick="connect()">Aktualisieren</button>
+  <span id="status">Bereit</span>
 </div>
 
-<div class="grid" id="machineGrid"></div>
-
+<div id="summary"></div>
+<div id="boxes"></div>
 <div id="log"></div>
 
 <script>
-const STREAM_URL = "http://localhost:8081/v1/shopfloor/stream";
-const HISTORY_URL = "http://localhost:8888/api/v1/machines"; // Über Traefik / BFF
-let machines = {};
-let eventSource = null;
+const API_BASE = "http://localhost:8888/api/v1";
+const REFRESH_MS = 5000;
 
-function log(msg) {
-  const el = document.getElementById("log");
-  const line = document.createElement("div");
-  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
-  el.prepend(line);
+let overview = null;
+let refreshTimer = null;
+let eventSource = null;
+let currentTenant = "";
+const flashing = new Set();
+
+// ---------------------------------------------------------------- Zusammenfassung berechnen
+function summarize(ov) {
+  const s = { boxes: 0, boxesOnline: 0, machines: 0, ok: 0, warning: 0, error: 0, unknown: 0 };
+  if (!ov) return s;
+  for (const b of ov.boxes || []) {
+    s.boxes++;
+    if (b.online) s.boxesOnline++;
+    for (const m of b.machines || []) {
+      s.machines++;
+      s[["ok", "warning", "error"].includes(m.status) ? m.status : "unknown"]++;
+    }
+  }
+  return s;
 }
 
-async function fetchMachineHistory(tenantId, machineId, cardElement) {
-  try {
-    const response = await fetch(`${HISTORY_URL}/${machineId}/history?limit=15`, {
-      headers: { "X-Tenant-ID": tenantId }
-    });
-    if (!response.ok) return;
-    const data = await response.json();
-    
-    const historyContainer = cardElement.querySelector('.timeline-tilesbar');
-    if (!historyContainer) return;
-    historyContainer.innerHTML = "";
+function ago(iso) {
+  if (!iso) return "";
+  const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (isNaN(sec)) return "";
+  if (sec < 60) return `vor ${sec}s`;
+  if (sec < 3600) return `vor ${Math.round(sec / 60)} min`;
+  return new Date(iso).toLocaleTimeString();
+}
 
-    const historyItems = data.history || [];
-    if (historyItems.length === 0) {
-      historyContainer.innerHTML = '<div style="font-size:9px; color:#556; text-align:center; width:100%;">Keine Historie</div>';
-      return;
-    }
-
-    // Älteste bis neueste sortieren für den Zeitstrahl von links nach rechts
-    historyItems.reverse().forEach(item => {
-      const tile = document.createElement("div");
-      const statusClass = (item.status || 'unknown').toLowerCase();
-      tile.className = `tile ${statusClass}`;
-      
-      const timeStr = new Date(item.time).toLocaleTimeString();
-      const errStr = item.error_code ? ` (${item.error_code})` : '';
-      tile.title = `${timeStr} - Status: ${item.status.toUpperCase()}${errStr}`;
-      
-      historyContainer.appendChild(tile);
-    });
-  } catch (err) {
-    console.error("Fehler beim Laden der Historie für", machineId, err);
+function appendTelemetryFields(card, tel) {
+  if (!tel || typeof tel !== "object") return;
+  if (tel.temperature !== undefined && tel.temperature !== null) {
+    const num = Number(tel.temperature);
+    card.appendChild(field("Temp.", Number.isFinite(num) ? `${num.toFixed(1)} °C` : String(tel.temperature), "tel"));
+  }
+  if (tel.parts_produced !== undefined && tel.parts_produced !== null) {
+    const cnt = Number(tel.parts_produced);
+    card.appendChild(field("Teile", Number.isFinite(cnt) ? cnt.toLocaleString("de-DE") : String(tel.parts_produced), "tel"));
+  }
+  if (tel.spindle_rotating !== undefined && tel.spindle_rotating !== null) {
+    card.appendChild(field("Spindel", tel.spindle_rotating ? "dreht" : "steht", "tel"));
+  }
+  if (tel.operation_hours !== undefined && tel.operation_hours !== null) {
+    const hrs = Number(tel.operation_hours);
+    if (Number.isFinite(hrs)) card.appendChild(field("Betrieb", `${hrs.toFixed(1)} h`, "tel"));
+  }
+  if (tel.power_on_hours !== undefined && tel.power_on_hours !== null) {
+    const pwr = Number(tel.power_on_hours);
+    if (Number.isFinite(pwr)) card.appendChild(field("Ein", `${pwr.toFixed(1)} h`, "tel"));
+  }
+  if (tel.status !== undefined && tel.status !== null && tel.status !== "ok") {
+    card.appendChild(field("Tel-State", String(tel.status), "tel"));
   }
 }
 
-function renderGrid() {
-  const grid = document.getElementById("machineGrid");
-  const tenantId = document.getElementById("tenantInput").value.trim();
-  
-  grid.innerHTML = "";
-  Object.values(machines).forEach(m => {
-    const status = (m.status || 'ok').toLowerCase();
-    const card = document.createElement("div");
-    card.className = "card" + (m._flash ? " flash" : "");
-    card.id = `card-${m.machine_id}`;
-    
-    let errorHtml = '';
-    if (m.error_code) {
-      errorHtml = `<div class="error-code">⚠️ ${m.error_code}</div>`;
-    }
+function findMachine(ov, machineId) {
+  if (!ov || !machineId) return null;
+  for (const b of ov.boxes || []) {
+    const m = (b.machines || []).find(x => x.machine_id === machineId || x.name === machineId);
+    if (m) return m;
+  }
+  return (ov.unassigned || []).find(x => x.machine_id === machineId || x.name === machineId) || null;
+}
 
-    card.innerHTML = `
-      <div class="name">${m.name || m.machine_id}</div>
-      <div class="field">ID: ${m.machine_id}</div>
-      <div class="field">Box: ${m.box_id || "-"}</div>
-      <div class="status-row">
-        <span class="status-dot ${status}"></span>
-        <span class="field status-text ${status}">STATUS: ${status.toUpperCase()}</span>
-      </div>
-      ${errorHtml}
-      <div class="timeline-container">
-        <div class="timeline-label">
-          <span>Status-Historie (letzte Einträge)</span>
-          <span>live &rarr;</span>
-        </div>
-        <div class="timeline-tilesbar">
-          <div style="font-size:9px; color:#556; text-align:center; width:100%;">Lade...</div>
-        </div>
-      </div>
-    `;
-    grid.appendChild(card);
-    m._flash = false;
+// ---------------------------------------------------------------- DOM Rendering (Sicher gegen XSS)
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
 
-    // Historie asynchron per BFF-API laden
-    fetchMachineHistory(tenantId, m.machine_id, card);
+function field(label, value, valueCls = "") {
+  const f = el("div", "field");
+  f.appendChild(el("span", "k", label));
+  const valNode = valueCls ? el("span", valueCls, String(value)) : document.createTextNode(String(value));
+  f.appendChild(valNode);
+  return f;
+}
+
+function machineCard(m) {
+  const status = ["ok", "warning", "error"].includes(m.status) ? m.status : "unknown";
+  const card = el("div", "card " + status + (flashing.has(m.machine_id) ? " flash" : ""));
+
+  card.appendChild(el("div", "name", m.name || m.machine_id));
+  if (m.manufacturer) card.appendChild(field("Hersteller", m.manufacturer));
+  if (m.model) card.appendChild(field("Modell", m.model));
+  if (m.serial_number) card.appendChild(field("Seriennr.", m.serial_number));
+  if (m.machine_type) card.appendChild(field("Typ", m.machine_type));
+  if (m.endpoint_url) card.appendChild(field("Endpoint", m.endpoint_url));
+
+  appendTelemetryFields(card, m.telemetry);
+
+  const row = el("div", "status-row");
+  row.appendChild(el("span", "dot " + status));
+  row.appendChild(el("span", "field txt " + status, "STATUS: " + status.toUpperCase()));
+  row.appendChild(el("span", "when", ago(m.status_at)));
+  card.appendChild(row);
+
+  if (m.error_code) card.appendChild(el("div", "error-code", "⚠ " + m.error_code));
+  card.appendChild(el("div", "mid", m.machine_id));
+  return card;
+}
+
+function boxPanel(b) {
+  const panel = el("div", "box");
+  const head = el("div", "box-head");
+  head.appendChild(el("span", "dot " + (b.online ? "ok" : "error")));
+  head.appendChild(el("span", "box-title", b.hardware_id));
+
+  const state = b.online
+    ? ("ONLINE" + (b.activity ? " · " + b.activity : ""))
+    : ("OFFLINE" + (b.last_seen_seconds != null ? " · zuletzt vor " + b.last_seen_seconds + "s" : ""));
+  head.appendChild(el("span", "box-meta txt " + (b.online ? "ok" : "error"), state));
+  if (b.pairing_status) head.appendChild(el("span", "box-meta", "Pairing: " + b.pairing_status));
+
+  const n = (b.machines || []).length;
+  head.appendChild(el("span", "box-count" + (n >= b.machine_limit ? " full" : ""), n + "/" + b.machine_limit + " Maschinen"));
+  panel.appendChild(head);
+
+  const grid = el("div", "grid");
+  if (n === 0) {
+    grid.appendChild(el("div", "empty", "Dieser Box sind aktuell keine Maschinen zugewiesen."));
+  } else {
+    b.machines.forEach(m => grid.appendChild(machineCard(m)));
+  }
+  panel.appendChild(grid);
+  return panel;
+}
+
+function render() {
+  const s = summarize(overview);
+  const summary = document.getElementById("summary");
+  summary.textContent = "";
+  if (overview) {
+    const parts = [
+      `${s.boxes} Boxen (${s.boxesOnline} online)`,
+      `${s.machines} Maschinen`,
+      `${s.ok} ok`, `${s.warning} warning`, `${s.error} error`, `${s.unknown} unbekannt`,
+    ];
+    parts.forEach((p, i) => {
+      if (i) summary.appendChild(el("span", "sep", "|"));
+      summary.appendChild(document.createTextNode(p));
+    });
+  }
+
+  const container = document.getElementById("boxes");
+  container.textContent = "";
+  if (!overview || !overview.boxes || overview.boxes.length === 0) {
+    container.appendChild(el("div", "empty", overview ? "Keine Connector Boxen für diesen Tenant vorhanden." : ""));
+  } else {
+    overview.boxes.forEach(b => container.appendChild(boxPanel(b)));
+  }
+
+  if (overview && overview.unassigned && overview.unassigned.length) {
+    container.appendChild(el("div", "empty", `⚠ ${overview.unassigned.length} Maschine(n) ohne Connector-Box-Zuordnung.`));
+  }
+  flashing.clear();
+}
+
+function log(msg) {
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  document.getElementById("log").prepend(line);
+}
+
+function setStatus(text) { document.getElementById("status").textContent = text; }
+
+// ---------------------------------------------------------------- Live SSE Stream
+function connectStream(tenant) {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+
+  const es = new EventSource(`${API_BASE}/shopfloor/stream?tenant_id=${encodeURIComponent(tenant)}`);
+  eventSource = es;
+
+  es.addEventListener("connected", () => {
+    if (tenant !== currentTenant) return;
+    log("SSE-Stream verbunden für Tenant: " + tenant);
   });
+
+  es.addEventListener("message", (event) => {
+    if (tenant !== currentTenant || !overview) return;
+    try {
+      const payload = JSON.parse(event.data);
+      const data = payload.data || {};
+      if (data.tenant_id && data.tenant_id !== tenant) return;
+
+      const m = findMachine(overview, data.machine_id);
+      if (!m) return;
+
+      if (payload.type === "telemetry_update") {
+        m.telemetry = data.telemetry;
+        if (m.machine_id) flashing.add(m.machine_id);
+        render();
+      } else if (payload.type === "status_update") {
+        m.status = data.status;
+        m.error_code = data.error_code || null;
+        m.status_at = data.timestamp || new Date().toISOString();
+        if (m.machine_id) flashing.add(m.machine_id);
+        render();
+        log(`Status [${m.name || m.machine_id}] -> ${String(data.status).toUpperCase()}`);
+      }
+    } catch (err) {
+      console.error("Fehler beim Verarbeiten des SSE-Events", err);
+    }
+  });
+
+  es.onerror = () => {
+    if (tenant !== currentTenant) return;
+    log("SSE-Verbindung unterbrochen, Polling läuft weiter...");
+  };
+}
+
+// ---------------------------------------------------------------- Daten laden
+async function loadOverview() {
+  if (!currentTenant) return;
+  const tenant = currentTenant;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${API_BASE}/shopfloor?tenant_id=${encodeURIComponent(tenant)}`, { signal: ctrl.signal });
+    if (tenant !== currentTenant) return;
+    if (!res.ok) {
+      setStatus(res.status === 404 ? `Tenant '${tenant}' nicht gefunden` : `BFF-Fehler HTTP ${res.status}`);
+      return;
+    }
+    const fresh = await res.json();
+    // Telemetrie aus dem bestehenden State erhalten, falls der BFF-Snapshot kein telemetry-Feld liefert
+    if (overview) {
+      for (const b of fresh.boxes || []) {
+        for (const m of b.machines || []) {
+          if (!m.telemetry) {
+            const prev = findMachine(overview, m.machine_id);
+            if (prev && prev.telemetry) m.telemetry = prev.telemetry;
+          }
+        }
+      }
+    }
+    overview = fresh;
+    render();
+    setStatus("Aktualisiert (" + new Date().toLocaleTimeString() + ")");
+  } catch (err) {
+    setStatus("BFF nicht erreichbar");
+    console.error("Fehler beim Laden der Übersicht", err);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function connect() {
+  if (refreshTimer) clearInterval(refreshTimer);
   if (eventSource) {
     eventSource.close();
+    eventSource = null;
   }
-  const tenantId = document.getElementById("tenantInput").value.trim();
-  if (!tenantId) return;
 
-  machines = {};
-  renderGrid();
-  document.getElementById("status").textContent = "connecting...";
+  currentTenant = document.getElementById("tenantInput").value.trim();
+  if (!currentTenant) return;
 
-  eventSource = new EventSource(`${STREAM_URL}?tenant_id=${encodeURIComponent(tenantId)}`);
+  overview = null;
+  render();
+  setStatus("Lade Stammdaten...");
+  log("Starte Abfrage für Tenant: " + currentTenant);
 
-  eventSource.onopen = () => {
-    document.getElementById("status").textContent = "connected";
-    log("SSE connected for tenant " + tenantId);
-  };
-
-  eventSource.onerror = () => {
-    document.getElementById("status").textContent = "error/reconnecting";
-  };
-
-  eventSource.onmessage = (event) => {
-    const envelope = JSON.parse(event.data);
-
-    if (envelope.type === "uretos.shopfloor.snapshot") {
-      (envelope.data.machines || []).forEach(m => { machines[m.machine_id] = m; });
-      renderGrid();
-    }
-
-    if (envelope.type === "uretos.machine.event.registered") {
-      (envelope.data.machines || []).forEach(m => {
-        machines[m.machine_id] = { ...machines[m.machine_id], ...m, _flash: true };
-      });
-      renderGrid();
-    }
-
-    if (envelope.type === "uretos.machine.event.status_changed") {
-      const update = envelope.data;
-      if (machines[update.machine_id]) {
-        machines[update.machine_id].status = update.status;
-        machines[update.machine_id].error_code = update.error_code || null;
-        machines[update.machine_id]._flash = true;
-        renderGrid();
-        log(`Status update for ${update.machine_id}: ${update.status}`);
-      }
-    }
-  };
+  loadOverview();
+  connectStream(currentTenant);
+  refreshTimer = setInterval(loadOverview, REFRESH_MS);
 }
+
+window.addEventListener("DOMContentLoaded", () => {
+  connect();
+});
 </script>
 
 </body>

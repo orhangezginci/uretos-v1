@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>uretOS · Shopfloor Stream POC</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background: #050608;
+    color: #e6f9ff;
+    font-family: "Courier New", Courier, monospace;
+    padding: 24px;
+    margin: 0;
+  }
+  h1 { font-size: 16px; letter-spacing: 2px; color: #aaa; margin-top: 0; }
+  #controls { margin-bottom: 12px; }
+  input, button {
+    font-family: inherit;
+    background: #0a0e12;
+    color: #e6f9ff;
+    border: 1px solid #00e5ff;
+    padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: #00e5ff; color: #050608; }
+  #status { margin-left: 12px; color: #6b8a94; font-size: 12px; }
+  #summary { font-size: 12px; color: #9fd; margin-bottom: 16px; min-height: 16px; }
+  #summary .sep { color: #334; margin: 0 8px; }
+
+  /* Connector Box Containers */
+  .box {
+    border: 1px solid #1f3a44;
+    background: rgba(10,14,18,0.6);
+    padding: 14px 16px 18px;
+    margin-bottom: 22px;
+  }
+  .box-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid #1a2634;
+  }
+  .box-title { color: #00e5ff; font-size: 15px; letter-spacing: 1px; font-weight: bold; }
+  .box-meta { font-size: 11px; color: #6b8a94; }
+  .box-count { margin-left: auto; font-size: 12px; color: #9fd; }
+  .box-count.full { color: #d29922; }
+  .empty { font-size: 12px; color: #556; padding: 6px 0; }
+
+  /* Maschinen-Grid & Karten */
+  .grid { display: flex; flex-wrap: wrap; gap: 16px; }
+  .card {
+    border: 1px solid #00e5ff;
+    background: rgba(10,14,18,0.8);
+    box-shadow: 0 0 12px 0 rgba(0,229,255,0.2);
+    padding: 14px 18px;
+    min-width: 280px;
+    max-width: 360px;
+    flex: 1 1 280px;
+  }
+  .card.error { border-color: #f85149; box-shadow: 0 0 12px 0 rgba(248,81,73,0.25); }
+  .card.warning { border-color: #d29922; }
+  .card.unknown { border-color: #334; box-shadow: none; }
+  .card .name { color: #00e5ff; font-size: 14px; margin-bottom: 8px; font-weight: bold; word-break: break-word; }
+  .card .field { font-size: 12px; color: #9fd; margin-bottom: 3px; word-break: break-word; }
+  .card .field .k { color: #6b8a94; display: inline-block; min-width: 95px; }
+  .card .mid { font-size: 10px; color: #556; margin-top: 8px; word-break: break-all; }
+
+  /* Statusanzeige */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 6px;
+    border-top: 1px dashed #1a2634;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.ok { background: #3fb950; box-shadow: 0 0 6px rgba(63, 185, 80, 0.6); }
+  .dot.warning { background: #d29922; box-shadow: 0 0 6px rgba(210, 153, 34, 0.6); }
+  .dot.error { background: #f85149; box-shadow: 0 0 6px rgba(248, 81, 73, 0.6); }
+  .dot.unknown { background: #556; }
+  .txt.ok { color: #3fb950; }
+  .txt.warning { color: #d29922; }
+  .txt.error { color: #f85149; }
+  .txt.unknown { color: #6b8a94; }
+  .status-row .field { margin: 0; }
+  .status-row .when { margin-left: auto; font-size: 10px; color: #556; }
+
+  .error-code {
+    font-size: 11px;
+    color: #f85149;
+    margin-top: 4px;
+    background: rgba(248, 81, 73, 0.1);
+    padding: 2px 4px;
+    border-radius: 2px;
+  }
+
+  .card.flash { animation: flash 1s ease; }
+  @keyframes flash {
+    0% { box-shadow: 0 0 24px 4px #00e5ff; }
+    100% { box-shadow: 0 0 12px 0 rgba(0,229,255,0.2); }
+  }
+  #log {
+    margin-top: 24px;
+    font-size: 11px;
+    color: #556;
+    max-height: 180px;
+    overflow-y: auto;
+    border-top: 1px solid #222;
+    padding-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>uretOS · SHOPFLOOR COCKPIT STAMMDATEN &amp; STATUS POC</h1>
+
+<div id="controls">
+  <input id="tenantInput" value="schwarzwald-metallwaren" placeholder="Tenant ID" />
+  <button onclick="connect()">Aktualisieren</button>
+  <span id="status">Bereit</span>
+</div>
+
+<div id="summary"></div>
+<div id="boxes"></div>
+<div id="log"></div>
+
+<script>
+const API_BASE = "http://localhost:8888/api/v1";
+const REFRESH_MS = 5000; // Intervall für automatisches Polling im Step 1
+
+let overview = null;
+let refreshTimer = null;
+let currentTenant = "";
+const flashing = new Set();
+
+// ---------------------------------------------------------------- Zusammenfassung berechnen
+function summarize(ov) {
+  const s = { boxes: 0, boxesOnline: 0, machines: 0, ok: 0, warning: 0, error: 0, unknown: 0 };
+  if (!ov) return s;
+  for (const b of ov.boxes) {
+    s.boxes++;
+    if (b.online) s.boxesOnline++;
+    for (const m of b.machines) {
+      s.machines++;
+      s[["ok", "warning", "error"].includes(m.status) ? m.status : "unknown"]++;
+    }
+  }
+  return s;
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (isNaN(sec)) return "";
+  if (sec < 60) return `vor ${sec}s`;
+  if (sec < 3600) return `vor ${Math.round(sec / 60)} min`;
+  return new Date(iso).toLocaleTimeString();
+}
+
+// ---------------------------------------------------------------- DOM Rendering (Sicher gegen XSS)
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
+
+function field(label, value) {
+  const f = el("div", "field");
+  f.appendChild(el("span", "k", label));
+  f.appendChild(document.createTextNode(String(value)));
+  return f;
+}
+
+function machineCard(m) {
+  const status = ["ok", "warning", "error"].includes(m.status) ? m.status : "unknown";
+  const card = el("div", "card " + status + (flashing.has(m.machine_id) ? " flash" : ""));
+  
+  // Stammdaten rendern
+  card.appendChild(el("div", "name", m.name || m.machine_id));
+  if (m.manufacturer) card.appendChild(field("Hersteller", m.manufacturer));
+  if (m.model) card.appendChild(field("Modell", m.model));
+  if (m.serial_number) card.appendChild(field("Seriennr.", m.serial_number));
+  if (m.machine_type) card.appendChild(field("Typ", m.machine_type));
+  if (m.endpoint_url) card.appendChild(field("Endpoint", m.endpoint_url));
+
+  // Statuszeile
+  const row = el("div", "status-row");
+  row.appendChild(el("span", "dot " + status));
+  const label = el("span", "field txt " + status, "STATUS: " + status.toUpperCase());
+  row.appendChild(label);
+  row.appendChild(el("span", "when", ago(m.status_at)));
+  card.appendChild(row);
+
+  if (m.error_code) card.appendChild(el("div", "error-code", "⚠ " + m.error_code));
+  card.appendChild(el("div", "mid", m.machine_id));
+  return card;
+}
+
+function boxPanel(b) {
+  const panel = el("div", "box");
+  const head = el("div", "box-head");
+  head.appendChild(el("span", "dot " + (b.online ? "ok" : "error")));
+  head.appendChild(el("span", "box-title", b.hardware_id));
+  
+  const state = b.online ? ("ONLINE" + (b.activity ? " · " + b.activity : ""))
+                         : ("OFFLINE" + (b.last_seen_seconds != null ? " · zuletzt vor " + b.last_seen_seconds + "s" : ""));
+  head.appendChild(el("span", "box-meta txt " + (b.online ? "ok" : "error"), state));
+  if (b.pairing_status) head.appendChild(el("span", "box-meta", "Pairing: " + b.pairing_status));
+  
+  const n = b.machines.length;
+  head.appendChild(el("span", "box-count" + (n >= b.machine_limit ? " full" : ""), n + "/" + b.machine_limit + " Maschinen"));
+  panel.appendChild(head);
+
+  const grid = el("div", "grid");
+  if (n === 0) {
+    grid.appendChild(el("div", "empty", "Dieser Box sind aktuell keine Maschinen zugewiesen."));
+  } else {
+    b.machines.forEach(m => grid.appendChild(machineCard(m)));
+  }
+  panel.appendChild(grid);
+  return panel;
+}
+
+function render() {
+  const s = summarize(overview);
+  const summary = document.getElementById("summary");
+  summary.textContent = "";
+  if (overview) {
+    const parts = [
+      `${s.boxes} Boxen (${s.boxesOnline} online)`,
+      `${s.machines} Maschinen`,
+      `${s.ok} ok`, `${s.warning} warning`, `${s.error} error`, `${s.unknown} unbekannt`,
+    ];
+    parts.forEach((p, i) => {
+      if (i) summary.appendChild(el("span", "sep", "|"));
+      summary.appendChild(document.createTextNode(p));
+    });
+  }
+
+  const container = document.getElementById("boxes");
+  container.textContent = "";
+  if (!overview || overview.boxes.length === 0) {
+    container.appendChild(el("div", "empty", overview ? "Keine Connector Boxen für diesen Tenant vorhanden." : ""));
+  } else {
+    overview.boxes.forEach(b => container.appendChild(boxPanel(b)));
+  }
+  
+  if (overview && overview.unassigned && overview.unassigned.length) {
+    container.appendChild(el("div", "empty", `⚠ ${overview.unassigned.length} Maschine(n) ohne Connector-Box-Zuordnung.`));
+  }
+  flashing.clear();
+}
+
+function log(msg) {
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  document.getElementById("log").prepend(line);
+}
+
+function setStatus(text) { document.getElementById("status").textContent = text; }
+
+// ---------------------------------------------------------------- Daten laden
+async function loadOverview() {
+  if (!currentTenant) return;
+  const tenant = currentTenant;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${API_BASE}/shopfloor?tenant_id=${encodeURIComponent(tenant)}`, { signal: ctrl.signal });
+    if (tenant !== currentTenant) return;
+    if (!res.ok) {
+      setStatus(res.status === 404 ? `Tenant '${tenant}' nicht gefunden` : `BFF-Fehler HTTP ${res.status}`);
+      return;
+    }
+    overview = await res.json();
+    render();
+    setStatus("Aktualisiert (" + new Date().toLocaleTimeString() + ")");
+  } catch (err) {
+    setStatus("BFF nicht erreichbar");
+    console.error("Fehler beim Laden der Übersicht", err);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function connect() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  currentTenant = document.getElementById("tenantInput").value.trim();
+  if (!currentTenant) return;
+
+  overview = null;
+  render();
+  setStatus("Lade Stammdaten...");
+  log("Starte Abfrage für Tenant: " + currentTenant);
+  
+  loadOverview();
+  refreshTimer = setInterval(loadOverview, REFRESH_MS);
+}
+
+// Auto-Start beim Laden
+window.addEventListener("DOMContentLoaded", () => {
+  connect();
+});
+</script>
+
+</body>
+</html>

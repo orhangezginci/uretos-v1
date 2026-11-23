@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uretOS · Simulator-Steuerung</title>
+<style>
+  :root {
+    --bg: #0d1014; --panel: #151a21; --panel-2: #1b222b; --line: #263140;
+    --text: #e6edf3; --muted: #8b98a8; --accent: #38bdf8;
+    --ok: #3fb950; --warning: #d29922; --error: #f85149; --unknown: #4b5666;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 40px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: 17px; letter-spacing: .04em; font-weight: 650; }
+  h1 span { color: var(--accent); }
+  #conn { margin-left: auto; font-size: 12px; color: var(--muted); }
+  #conn.bad { color: var(--error); }
+
+  #summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .chip { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .chip b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .chip small { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .chip.ok b { color: var(--ok); } .chip.warning b { color: var(--warning); } .chip.error b { color: var(--error); }
+  .chip.unknown b { color: var(--muted); }
+  .chip.alert { border-color: currentColor; }
+  .chip.warning.alert { color: var(--warning); } .chip.error.alert { color: var(--error); }
+
+  #banner { display: none; margin-bottom: 16px; padding: 10px 14px; border: 1px solid var(--error); border-radius: 8px; background: rgba(248,81,73,.1); color: #ffb4ae; }
+  #empty { display: none; color: var(--muted); padding: 24px 0; }
+
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--unknown); border-radius: 10px; padding: 14px 16px 12px; transition: border-color .2s, box-shadow .2s; }
+  .card.ok { border-left-color: var(--ok); }
+  .card.warning { border-left-color: var(--warning); }
+  .card.error { border-left-color: var(--error); box-shadow: 0 0 0 1px rgba(248,81,73,.35), 0 0 16px rgba(248,81,73,.15); }
+  .card.unreachable { opacity: .65; }
+
+  .card-head { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--unknown); flex: none; }
+  .card.ok .dot { background: var(--ok); box-shadow: 0 0 6px rgba(63,185,80,.6); }
+  .card.warning .dot { background: var(--warning); box-shadow: 0 0 6px rgba(210,153,34,.6); }
+  .card.error .dot { background: var(--error); box-shadow: 0 0 6px rgba(248,81,73,.6); }
+  .name { font-weight: 650; font-size: 15px; word-break: break-word; }
+  .container { margin: 1px 0 0 20px; font-size: 11px; color: var(--muted); word-break: break-all; }
+
+  .health { margin: 10px 0 8px; font-size: 18px; font-weight: 650; letter-spacing: .02em; }
+  .card.ok .health { color: var(--ok); } .card.warning .health { color: var(--warning); }
+  .card.error .health { color: var(--error); } .card.unreachable .health { color: var(--muted); font-size: 14px; font-weight: 500; }
+
+  .attrs { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0 0 12px; font-size: 12.5px; }
+  .attrs dt { color: var(--muted); } .attrs dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+  .actions { display: flex; gap: 6px; }
+  .actions button { flex: 1; padding: 8px 6px; font: inherit; font-weight: 600; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+  .actions button:hover:not(:disabled) { border-color: var(--accent); }
+  .actions button:disabled { cursor: not-allowed; opacity: .45; }
+  .actions button.active[data-status="ok"] { background: rgba(63,185,80,.2); border-color: var(--ok); color: var(--ok); }
+  .actions button.active[data-status="warning"] { background: rgba(210,153,34,.2); border-color: var(--warning); color: var(--warning); }
+  .actions button.active[data-status="error"] { background: rgba(248,81,73,.2); border-color: var(--error); color: var(--error); }
+
+  .detail { margin-top: 8px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .detail span { flex: none; }
+  .detail select { flex: 1; min-width: 0; padding: 5px 6px; font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+  .detail select:disabled { opacity: .45; }
+
+  .temp-row { margin-top: 8px; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .temp-row span { flex: none; min-width: 44px; }
+  .temp-row input { flex: 1; min-width: 0; padding: 5px 6px; font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+  .temp-row button { padding: 5px 9px; font: inherit; font-weight: 600; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .temp-row button:hover:not(:disabled) { border-color: var(--accent); }
+  .temp-row button:disabled, .temp-row input:disabled { opacity: .45; cursor: not-allowed; }
+  .detail span { min-width: 44px; }
+
+  .msg { min-height: 17px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .msg.err { color: #ffb4ae; } .msg.good { color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><span>uretOS</span> · SIMULATOR-STEUERUNG</h1>
+    <div id="conn">Verbinde…</div>
+  </header>
+
+  <div id="summary"></div>
+  <div id="banner"></div>
+  <div id="grid"></div>
+  <div id="empty">Keine Simulator-Container gefunden. Laufen die Maschinen (docker compose up)?</div>
+</main>
+
+<script>
+"use strict";
+
+const POLL_MS = 3000;
+const STATUS_BUTTONS = [
+  { status: "ok", label: "OK" },
+  { status: "warning", label: "Warnung" },
+  { status: "error", label: "Fehler" },
+];
+const HEALTH_VALUES = ["NORMAL", "CHECK_FUNCTION", "OFF_SPEC", "MAINTENANCE_REQUIRED", "FAILURE"];
+
+// Weitere Attribute einer Karte: hier einfach eine Zeile ergaenzen (Label + Formatter auf dem Simulator-Zustand).
+const ATTRIBUTES = [
+  {
+    label: "Temperatur",
+    format: (s) => {
+      if (s.temperature == null) return "–";
+      const manual = s.auto_temp_paused ? " · manuell (" + Math.ceil(s.auto_temp_pause_remaining_sec) + " s)" : "";
+      return Number(s.temperature).toFixed(1) + " °C" + manual;
+    },
+  },
+];
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+
+const cards = new Map();     // machine_name -> { root, refs, data, busy, msgTimer }
+const lastWriteAt = new Map(); // machine_name -> performance.now() des letzten erfolgreichen Setzens
+let namesSignature = "";
+let inFlight = false;
+
+// ------------------------------------------------------------------ Karte erzeugen / aktualisieren
+function createCard(name) {
+  const root = el("div", "card");
+  const head = el("div", "card-head");
+  const dot = el("span", "dot");
+  const title = el("span", "name", name);
+  const container = el("span", "container");
+  head.append(dot, title);
+
+  const health = el("div", "health");
+  const attrs = el("dl", "attrs");
+  const attrValues = ATTRIBUTES.map((a) => {
+    const dd = el("dd");
+    attrs.append(el("dt", "", a.label), dd);
+    return dd;
+  });
+
+  const actions = el("div", "actions");
+  const buttons = STATUS_BUTTONS.map((b) => {
+    const btn = el("button", "", b.label);
+    btn.type = "button";
+    btn.dataset.status = b.status;
+    btn.addEventListener("click", () => setMachine(name, { status: b.status }));
+    actions.append(btn);
+    return btn;
+  });
+
+  const detail = el("label", "detail");
+  const select = el("select");
+  HEALTH_VALUES.forEach((v) => select.append(new Option(v, v)));
+  select.addEventListener("change", () => setMachine(name, { device_health: select.value }));
+  detail.append(el("span", "", "Detail"), select);
+
+  const tempRow = el("div", "temp-row");
+  const tempInput = el("input");
+  tempInput.type = "number"; tempInput.step = "0.1"; tempInput.placeholder = "°C";
+  const tempSet = el("button", "", "Setzen"); tempSet.type = "button";
+  const tempAuto = el("button", "", "Auto"); tempAuto.type = "button";
+  tempAuto.title = "Auto-Drift sofort wieder freigeben";
+  const submitTemp = () => {
+    const raw = tempInput.value.trim();
+    const num = Number(raw);
+    if (raw === "" || !Number.isFinite(num)) { showMessage(cards.get(name), "Bitte eine Temperatur eingeben", "err", 4000); return; }
+    setMachine(name, { temperature: num });
+  };
+  tempSet.addEventListener("click", submitTemp);
+  tempInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submitTemp(); });
+  tempAuto.addEventListener("click", () => setMachine(name, { resume_auto_temp: true }));
+  tempRow.append(el("span", "", "Temp."), tempInput, tempSet, tempAuto);
+
+  const msg = el("div", "msg");
+  root.append(head, container, health, attrs, actions, detail, tempRow, msg);
+
+  return { root, refs: { container, health, attrValues, buttons, select, tempInput, tempSet, tempAuto, msg }, data: null, busy: false, msgTimer: null };
+}
+
+function applyData(card, m) {
+  card.data = m;
+  const { refs, root } = card;
+  const s = m.state;
+  const status = s && ["ok", "warning", "error"].includes(s.status) ? s.status : null;
+
+  root.className = "card " + (status || "unknown") + (s ? "" : " unreachable");
+  refs.container.textContent = m.container;
+  refs.health.textContent = s ? s.device_health_name : "nicht erreichbar";
+
+  ATTRIBUTES.forEach((a, i) => { refs.attrValues[i].textContent = s ? a.format(s) : "–"; });
+
+  refs.buttons.forEach((b) => b.classList.toggle("active", b.dataset.status === status));
+  if (s && document.activeElement !== refs.select) refs.select.value = s.device_health_name;
+
+  const disabled = !s || card.busy;
+  refs.buttons.forEach((b) => { b.disabled = disabled; });
+  refs.select.disabled = disabled;
+  refs.tempInput.disabled = disabled;
+  refs.tempSet.disabled = disabled;
+  refs.tempAuto.disabled = disabled || !(s && s.auto_temp_paused);
+  if (s && s.temperature != null) refs.tempInput.placeholder = Number(s.temperature).toFixed(1);
+
+  if (!s && m.error) { showMessage(card, "Simulator antwortet nicht", "err", 0); refs.msg.title = m.error; }
+  else if (s && refs.msg.dataset.sticky === "1") clearMessage(card);
+}
+
+function showMessage(card, text, kind, ttlMs) {
+  clearTimeout(card.msgTimer);
+  card.refs.msg.title = "";
+  card.refs.msg.textContent = text;
+  card.refs.msg.className = "msg " + (kind || "");
+  card.refs.msg.dataset.sticky = ttlMs === 0 ? "1" : "";
+  if (ttlMs) card.msgTimer = setTimeout(() => clearMessage(card), ttlMs);
+}
+function clearMessage(card) {
+  card.refs.msg.textContent = "";
+  card.refs.msg.className = "msg";
+  card.refs.msg.dataset.sticky = "";
+}
+
+// ------------------------------------------------------------------ Uebersicht
+function renderSummary(machines) {
+  const c = { ok: 0, warning: 0, error: 0, unknown: 0 };
+  machines.forEach((m) => {
+    const st = m.state && ["ok", "warning", "error"].includes(m.state.status) ? m.state.status : "unknown";
+    c[st]++;
+  });
+  const summary = document.getElementById("summary");
+  summary.textContent = "";
+  const chip = (cls, n, label, alert) => {
+    const d = el("div", "chip " + cls + (alert && n > 0 ? " alert" : ""));
+    d.append(el("b", "", String(n)), el("small", "", label));
+    summary.append(d);
+  };
+  chip("", machines.length, "Maschinen", false);
+  chip("ok", c.ok, "OK", false);
+  chip("warning", c.warning, "Warnung", true);
+  chip("error", c.error, "Fehler", true);
+  if (c.unknown) chip("unknown", c.unknown, "nicht erreichbar", false);
+}
+
+function setConn(text, bad) {
+  const e = document.getElementById("conn");
+  e.textContent = text;
+  e.classList.toggle("bad", !!bad);
+}
+function setBanner(text) {
+  const b = document.getElementById("banner");
+  b.style.display = text ? "block" : "none";
+  b.textContent = text || "";
+}
+
+// ------------------------------------------------------------------ Daten laden (Polling)
+async function refresh() {
+  if (inFlight) return;
+  inFlight = true;
+  const t0 = performance.now();
+  try {
+    const res = await fetch("/api/machines", { cache: "no-store" });
+    const body = await res.json();
+    if (!res.ok || !body.ok) {
+      setBanner("Backend-Fehler: " + (body.error || "HTTP " + res.status));
+      setConn("Fehler", true);
+      return;
+    }
+    setBanner("");
+    const machines = body.machines;
+
+    const signature = machines.map((m) => m.machine_name).join("|");
+    if (signature !== namesSignature) reconcile(machines);
+
+    machines.forEach((m) => {
+      const card = cards.get(m.machine_name);
+      // Wurde die Maschine waehrend dieser Abfrage gesetzt, ist das Abfrageergebnis veraltet.
+      if (card && !((lastWriteAt.get(m.machine_name) || 0) > t0)) applyData(card, m);
+    });
+    renderSummary(machines);
+    document.getElementById("empty").style.display = machines.length ? "none" : "block";
+    setConn("Aktualisiert " + new Date().toLocaleTimeString("de-DE"), false);
+  } catch (err) {
+    setBanner("sim-control-Server nicht erreichbar. Läuft 'python3 server.py'?");
+    setConn("Keine Verbindung", true);
+  } finally {
+    inFlight = false;
+  }
+}
+
+// Karten nur anlegen/entfernen/neu ordnen, wenn sich die Maschinenmenge aendert
+// (sonst wuerde ein geoeffnetes Dropdown beim Polling zuklappen).
+function reconcile(machines) {
+  const grid = document.getElementById("grid");
+  const names = new Set(machines.map((m) => m.machine_name));
+  for (const [name, card] of cards) {
+    if (!names.has(name)) { card.root.remove(); cards.delete(name); }
+  }
+  machines.forEach((m) => {
+    if (!cards.has(m.machine_name)) cards.set(m.machine_name, createCard(m.machine_name));
+    grid.append(cards.get(m.machine_name).root);
+  });
+  namesSignature = machines.map((m) => m.machine_name).join("|");
+}
+
+// ------------------------------------------------------------------ Status setzen
+async function setMachine(name, payload) {
+  const card = cards.get(name);
+  if (!card || card.busy) return;
+  card.busy = true;
+  applyData(card, card.data);
+  showMessage(card, "Setze…", "", 0);
+  try {
+    const res = await fetch("/api/machines/" + encodeURIComponent(name) + "/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (res.ok && body.ok) {
+      lastWriteAt.set(name, performance.now());
+      card.busy = false;
+      applyData(card, Object.assign({}, card.data, { state: body.state, error: null }));
+      if ("temperature" in payload) card.refs.tempInput.value = "";
+      showMessage(card, describeUpdate(body.updated || {}), "good", 4000);
+      renderSummaryFromCards();
+    } else {
+      throw new Error(body.error || "HTTP " + res.status);
+    }
+  } catch (err) {
+    card.busy = false;
+    applyData(card, card.data);
+    if (card.data && card.data.state) card.refs.select.value = card.data.state.device_health_name;
+    showMessage(card, "Fehler: " + err.message, "err", 8000);
+  }
+}
+
+function describeUpdate(u) {
+  const parts = [];
+  if (u.device_health_name) parts.push(u.device_health_name);
+  if (u.temperature !== undefined) parts.push(Number(u.temperature).toFixed(1) + " °C (Auto-Drift pausiert " + u.auto_temp_paused_for_sec + " s)");
+  if (u.auto_temp_paused === false) parts.push("Auto-Drift aktiv");
+  return "Gesetzt: " + (parts.join(" · ") || "ok");
+}
+
+function renderSummaryFromCards() {
+  renderSummary([...cards.values()].map((c) => c.data));
+}
+
+refresh();
+setInterval(refresh, POLL_MS);
+</script>
+</body>
+</html>

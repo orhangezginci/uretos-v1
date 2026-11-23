@@ -466,7 +466,7 @@ def _stage3_generic(ctx: _Ctx, ident: MachineIdentity, max_depth=4, max_nodes=40
 # Public APIs
 # --------------------------------------------------------------------------- #
 
-def discover_machines(host: str, port: int, max_machines: int = 5, timeout: float = 3.0) -> list[MachineIdentity]:
+def inspect_machines(host: str, port: int, max_machines: int = 5, timeout: float = 3.0) -> list[MachineIdentity]:
     """Returns a list of MachineIdentities (up to max_machines licensed slots) found on the server."""
     client = Client(f"opc.tcp://{host}:{port}", timeout=timeout)
     try:
@@ -533,7 +533,7 @@ def discover_machines(host: str, port: int, max_machines: int = 5, timeout: floa
 
 def discover_machine(host: str, port: int, timeout: float = 3.0) -> Optional[MachineIdentity]:
     """Backward-compatible wrapper returning the primary (first) machine found."""
-    results = discover_machines(host, port, max_machines=1, timeout=timeout)
+    results = inspect_machines(host, port, max_machines=1, timeout=timeout)
     return results[0] if results else None
 
 

@@ -16,7 +16,7 @@ import time
 import requests
 import streamlit as st
 
-from discovery import discover_machines
+from opc_inspector import inspect_machines
 
 logging.basicConfig(level=logging.INFO)
 
@@ -160,7 +160,7 @@ def main():
         box_placeholder.markdown(render_box("DISCOVERING...", f"SCANNING :{OPC_UA_PORT}", leds), unsafe_allow_html=True)
         time.sleep(0.6)
 
-        identities = discover_machines(OPC_UA_HOST, OPC_UA_PORT, max_machines=MAX_LICENSED_MACHINES)
+        identities = inspect_machines(OPC_UA_HOST, OPC_UA_PORT, max_machines=MAX_LICENSED_MACHINES)
 
         if identities:
             primary_name = str(identities[0].name)[:18].upper()
