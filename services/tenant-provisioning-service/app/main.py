@@ -11,6 +11,10 @@ is why it travels under tenantid="system" - it is not itself tenant data.
 Provisions three isolated things per tenant: a Postgres container, a Redis
 container (both via docker-socket-proxy), and a RabbitMQ vhost+user (via the
 RabbitMQ Management API) - DB isolation and messaging isolation together.
+
+If the RabbitMQ step fails after Postgres/Redis were created in the same
+command, the freshly created infrastructure is rolled back so no half-provisioned
+tenant remains.
 """
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ from provisioning import (
     ProvisioningError,
     provision_tenant_infrastructure,
     provision_tenant_rabbitmq,
+    rollback_tenant_infrastructure,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -51,8 +56,14 @@ def handle_command(channel: pika.channel.Channel, method, properties, body: byte
 
     try:
         infra_info = provision_tenant_infrastructure(tenant_id)
-        rabbitmq_info = provision_tenant_rabbitmq(tenant_id)
-        infra_info["rabbitmq"] = rabbitmq_info
+        try:
+            infra_info["rabbitmq"] = provision_tenant_rabbitmq(tenant_id)
+        except ProvisioningError:
+            # Infra was created by THIS command (the call above succeeded), so
+            # removing it again is safe and keeps the system free of half-tenants.
+            log.warning("RabbitMQ provisioning failed for '%s' - rolling back infrastructure", tenant_id)
+            rollback_tenant_infrastructure(tenant_id)
+            raise
         out_type = "uretos.tenant.event.provisioned"
         out_tenant = tenant_id
         out_data = infra_info

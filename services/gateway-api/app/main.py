@@ -15,6 +15,7 @@ Endpoints:
   POST /v1/connector-boxes/pair
   POST /v1/connector-boxes/handshake
   POST /v1/connector-boxes/autoscan
+  POST /v1/connector-boxes/discovered
   GET  /v1/connector-boxes/<hardware_id>/machines
   GET  /v1/machines?tenant_id=<tenant_id>
   GET  /healthz
@@ -43,7 +44,10 @@ log = logging.getLogger("gateway-api")
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://uretos:uretos_dev_pass@rabbitmq:5672/")
 EXCHANGE = "uretos.events"
 SOURCE = "uretos/services/gateway-api"
-TIMEOUT_SECONDS = int(os.environ.get("GATEWAY_RPC_TIMEOUT_SECONDS", "20"))
+TIMEOUT_SECONDS = int(os.environ.get("GATEWAY_RPC_TIMEOUT_SECONDS", "60"))
+
+# In-Memory-State für aktive Box-Status (kann für Multi-Worker ggf. in Redis/DB gespiegelt werden, reicht für Single-Instance/Edge aber aus)
+BOX_STATUS_STORE = {}
 
 app = Flask(__name__)
 
@@ -269,7 +273,12 @@ def register_autoscan_machines():
     if envelope["type"] == "uretos.machine.event.registered":
         return jsonify(envelope["data"]), 200
 
-    return jsonify({"error": envelope["data"].get("reason", "Machine registration failed")}), 400
+    reason = envelope["data"].get("reason", "Machine registration failed")
+    error_code = envelope["data"].get("error_code")
+    # Rule violations are conflicts (409) with a machine readable code; everything else stays 400.
+    status = 409 if error_code in ("machine_taken", "box_limit_reached") else 400
+    return jsonify({"error": reason, "error_code": error_code}), status
+
 @app.route("/v1/connector-boxes/handshake", methods=["POST"])
 def connector_box_handshake():
     data = request.get_json(silent=True) or {}
@@ -278,7 +287,7 @@ def connector_box_handshake():
     if not hardware_id:
         return jsonify({"error": "hardware_id is required"}), 400
 
-    # Gezielter RPC-Query an den Query-Service statt Listen-Abfrage
+    # Gezielter RPC-Query an den Query-Service
     envelope = query_rpc("uretos.connectorbox.query.by_hardware_id", {"hardware_id": hardware_id})
     if envelope is None:
         return jsonify({"error": "Timed out waiting for query result"}), 504
@@ -291,15 +300,26 @@ def connector_box_handshake():
     if box.get("status") != "paired":
         return jsonify({"error": "Box is not paired yet", "status": box.get("status")}), 403
 
-    log.info("Handshake successful for box: %s", hardware_id)
+    # Lizenzkontingent und Status auslesen (Hardware-Hrtlimit max. 5, bei Zahlungsverzug/Sperre 0)
+    raw_max_machines = box.get("max_machines", 5)
+    license_status = box.get("license_status", "active")
+
+    if license_status in ("suspended", "overdue", "revoked"):
+        max_machines = 0
+    else:
+        max_machines = min(int(raw_max_machines), 5)
+
+    log.info("Handshake successful for box: %s (max_machines=%d, status=%s)", hardware_id, max_machines, license_status)
     return jsonify({
         "status": "ok",
         "box_id": box.get("box_id"),
         "tenant_id": box.get("tenant_id"),
+        "licensing": {
+            "max_machines": max_machines,
+            "status": license_status
+        },
         "message": "Handshake accepted. Proceed with autoscan."
     }), 200
-
-
 @app.route("/v1/connector-boxes", methods=["POST"])
 def create_connector_box():
     payload = request.get_json(silent=True) or {}
@@ -414,10 +434,186 @@ def update_machine_status(machine_id: str):
 
     return jsonify({"success": True, "machine_id": machine_id, "status": status}), 200
     
+DISCOVERED_STATES = ("assigned", "limit", "rejected")
+DISCOVERED_MAX_MACHINES = 500
+DISCOVERED_FIELDS = ("uid", "name", "manufacturer", "model", "serial_number", "endpoint_url", "product_instance_uri")
+
+
+def publish_event(event_type: str, data: dict, tenant_id: str) -> None:
+    """Fire-and-forget: publishes a CloudEvent, no reply expected."""
+    envelope_out = build_envelope(
+        event_type=event_type, source=SOURCE, data=data, tenant_id=tenant_id, messagetype="event",
+    )
+    connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+    try:
+        channel = connection.channel()
+        channel.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=True)
+        channel.basic_publish(
+            exchange=EXCHANGE,
+            routing_key=event_type,
+            body=json.dumps(envelope_out).encode("utf-8"),
+            properties=pika.BasicProperties(content_type="application/json"),
+        )
+    finally:
+        connection.close()
+
+
+@app.route("/v1/connector-boxes/discovered", methods=["POST"])
+def report_discovered_machines():
+    """
+    A box reports EVERYTHING it currently sees on its network - including machines
+    it could not take over (box limit reached, claimed by another box). This is a
+    snapshot (observation), not a registration: it never changes assignments.
+
+    Published as event `uretos.connectorbox.event.machines_discovered`; consumers
+    upsert by (tenant_id, uid) and may treat machines missing from a later snapshot
+    of the same box as "not seen anymore". Fire-and-forget on purpose: while no
+    consumer exists the event is simply dropped by the topic exchange, the box
+    never waits for it.
+    """
+    payload = request.get_json(silent=True) or {}
+    hardware_id = payload.get("hardware_id")
+    machines = payload.get("machines")
+
+    if not hardware_id:
+        return jsonify({"error": "hardware_id is required"}), 400
+    if not isinstance(machines, list) or len(machines) > DISCOVERED_MAX_MACHINES:
+        return jsonify({"error": f"machines must be a list with at most {DISCOVERED_MAX_MACHINES} entries"}), 400
+
+    # Whitelist fields: whatever else a client sends never reaches the event bus.
+    clean = []
+    for i, m in enumerate(machines):
+        if not isinstance(m, dict) or not m.get("uid"):
+            return jsonify({"error": f"machines[{i}].uid is required"}), 400
+        if m.get("state") not in DISCOVERED_STATES:
+            return jsonify({"error": f"machines[{i}].state must be one of {list(DISCOVERED_STATES)}"}), 400
+        entry = {k: m.get(k) for k in DISCOVERED_FIELDS}
+        entry["state"] = m["state"]
+        entry["reason"] = str(m.get("reason") or "")[:300]
+        clean.append(entry)
+
+    box_env = query_rpc("uretos.connectorbox.query.by_hardware_id", {"hardware_id": hardware_id})
+    if box_env is None:
+        return jsonify({"error": "Timed out waiting for query result"}), 504
+    box = box_env.get("data", {}).get("connector_box")
+    if not box:
+        return jsonify({"error": "Connector box not found"}), 404
+    if box.get("status") != "paired":
+        return jsonify({"error": "Box is not paired yet", "status": box.get("status")}), 403
+
+    try:
+        publish_event(
+            "uretos.connectorbox.event.machines_discovered",
+            {
+                "hardware_id": hardware_id,
+                "box_id": box.get("box_id"),
+                "tenant_id": box.get("tenant_id"),
+                "machines": clean,
+                "reported_at": datetime.now(timezone.utc).isoformat(),
+            },
+            tenant_id=box.get("tenant_id"),
+        )
+    except Exception as exc:
+        log.error("Failed to publish machines_discovered event: %s", exc)
+        return jsonify({"error": "Internal broker error"}), 500
+
+    log.info("Discovered report: hardware_id=%s, machines=%d", hardware_id, len(clean))
+    return jsonify({"success": True, "count": len(clean)}), 202
+
+
 @app.route("/healthz", methods=["GET"])
 def healthz():
     return jsonify({"status": "ok"}), 200
+# In-Memory-State für aktive Box-Status (kann für Multi-Worker ggf. in Redis/DB gespiegelt werden, reicht für Single-Instance/Edge aber aus)
+BOX_STATUS_STORE = {}
 
+@app.route("/v1/connector-boxes/status", methods=["POST"])
+def update_connector_box_status():
+    payload = request.get_json(silent=True) or {}
+    hardware_id = payload.get("hardware_id")
+    status = payload.get("status")
+
+    if not hardware_id or not status:
+        return jsonify({"error": "hardware_id and status are required"}), 400
+
+    BOX_STATUS_STORE[hardware_id] = {
+        "status": status,
+        "updated_at": time.time()
+    }
+    log.info("Box status updated: hardware_id=%s, status=%s", hardware_id, status)
+    return jsonify({"success": True, "hardware_id": hardware_id, "status": status}), 200
+
+
+@app.route("/v1/connector-boxes/status", methods=["GET"])
+def list_connector_box_status():
+    """Letzter gemeldeter Status je Box (nur im Speicher dieser Gateway-Instanz). age_seconds wird hier berechnet,
+    damit Clients keine Uhren vergleichen müssen."""
+    now = time.time()
+    return jsonify({
+        hw_id: {"status": info.get("status"), "updated_at": info.get("updated_at"),
+                "age_seconds": round(now - info.get("updated_at", 0), 1)}
+        for hw_id, info in BOX_STATUS_STORE.items()
+    }), 200
+
+
+@app.route("/v1/connector-boxes/active-scan", methods=["GET"])
+def get_active_scan_box():
+    """Prüft, welche Box sich aktuell im Modus 'scanning' befindet."""
+    active_scanner = None
+    current_time = time.time()
+
+    for hw_id, info in BOX_STATUS_STORE.items():
+        # Falls ein Status älter als 60 Sekunden ist, betrachten wir ihn als veraltet/abgestürzt
+        if info.get("status") == "scanning":
+            if current_time - info.get("updated_at", 0) < 60:
+                active_scanner = hw_id
+                break
+            else:
+                # Timeout abgelaufen, Status bereinigen
+                info["status"] = "connected"
+
+    return jsonify({"active_scanner": active_scanner}), 200
+
+@app.route("/v1/telemetry", methods=["POST"])
+def receive_generic_telemetry():
+    payload = request.get_json(silent=True) or {}
+    hardware_id = payload.get("box_id") or payload.get("hardware_id")
+    machine_id = payload.get("machine_id")
+    telemetry_data = payload.get("telemetry", {})
+
+    if not machine_id:
+        return jsonify({"error": "machine_id is required"}), 400
+
+    if not isinstance(telemetry_data, dict):
+        return jsonify({"error": "telemetry must be a dictionary"}), 400
+
+    # Tenant-ID robust auflösen: Entweder direkt im Payload oder dynamisch über die Hardware-ID der Box
+    tenant_id = payload.get("tenant_id")
+    if not tenant_id and hardware_id:
+        box_env = query_rpc("uretos.connectorbox.query.by_hardware_id", {"hardware_id": hardware_id})
+        if box_env and box_env.get("data", {}).get("connector_box"):
+            tenant_id = box_env["data"]["connector_box"].get("tenant_id")
+
+    if not tenant_id:
+        return jsonify({"error": "Could not resolve tenant_id for telemetry payload"}), 400
+
+    try:
+        publish_event(
+            "uretos.machine.event.telemetry_updated",
+            {
+                "machine_id": machine_id,
+                "hardware_id": hardware_id,
+                "telemetry": telemetry_data,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:
+        log.error("Failed to publish telemetry event: %s", exc)
+        return jsonify({"error": "Internal broker error"}), 500
+
+    log.debug("Published telemetry for machine_id=%s under tenant_id=%s", machine_id, tenant_id)
+    return jsonify({"status": "published", "tenant_id": tenant_id}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)

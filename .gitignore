@@ -31,3 +31,4 @@ ChatGPT Image*.png
 # AI / agent folders
 .agents/
 .claude/
+tools/sim_state/

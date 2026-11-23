@@ -1,3 +1,6 @@
+include:
+  - shopfloor.yaml
+
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -13,6 +16,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - default
+      - tenant-net
 
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
@@ -24,9 +30,12 @@ services:
       CONTAINERS: 1
       POST: 1
       IMAGES: 1
+      EXEC: 1
       NETWORKS: 1
       VOLUMES: 1
     restart: unless-stopped
+    networks:
+      - default
 
   system-postgres:
     image: postgres:16-alpine
@@ -44,6 +53,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - default
+      - tenant-net
 
   tenant-provisioning-service:
     build: ./services/tenant-provisioning-service
@@ -61,6 +73,9 @@ services:
       RABBITMQ_ADMIN_USER: "uretos"
       RABBITMQ_ADMIN_PASSWORD: "uretos_dev_pass"
     restart: unless-stopped
+    networks:
+      - default
+      - tenant-net
 
   tenant-command-service:
     build: ./services/tenant-command-service
@@ -74,6 +89,9 @@ services:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
       SYSTEM_DB_URL: "postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
     restart: unless-stopped
+    networks:
+      - default
+      - tenant-net
 
   tenant-query-service:
     build: ./services/tenant-query-service
@@ -87,6 +105,9 @@ services:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
       SYSTEM_DB_URL: "postgresql+psycopg://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
     restart: unless-stopped
+    networks:
+      - default
+      - tenant-net
 
   connector-box-command-service:
     build: ./services/connector-box-command-service
@@ -101,6 +122,9 @@ services:
       SYSTEM_DB_URL: "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
       CONNECTOR_BOX_JWT_SECRET: "uretos_dev_jwt_secret_change_me"
     restart: unless-stopped
+    networks:
+      - default
+      - tenant-net
 
   connector-box-query-service:
     build: ./services/connector-box-query-service
@@ -114,6 +138,9 @@ services:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
       SYSTEM_DB_URL: "postgresql://uretos_system:uretos_system_dev_pass@system-postgres:5432/uretos_system"
     restart: unless-stopped
+    networks:
+      - default
+      - tenant-net
 
   gateway-api:
     build: ./services/gateway-api
@@ -126,6 +153,9 @@ services:
     environment:
       RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
     restart: unless-stopped
+    networks:
+      - default
+      - tenant-net
 
   machine-command-service:
     build: ./services/machine-command-service
@@ -159,18 +189,6 @@ services:
       - tenant-net
     restart: unless-stopped
 
-  shopfloor-stream-service:
-    build: ./services/shopfloor-stream-service
-    container_name: uretos-shopfloor-stream-service
-    ports:
-      - "8081:8081"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      RABBITMQ_URL: "amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/"
-    restart: unless-stopped
-  
   timescale-writer-service:
     build:
       context: ./services/timescale-writer-service
@@ -214,12 +232,20 @@ services:
     container_name: uretos-shopfloor-bff-api
     environment:
       - RABBITMQ_URL=amqp://uretos_system:uretos_system_dev_pass@rabbitmq:5672/
+      - GATEWAY_URL=http://gateway-api:8080
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.shopfloor-bff.rule=PathPrefix(`/api/v1/machines`)"
+      - "traefik.http.routers.shopfloor-bff.rule=PathPrefix(`/api/v1/shopfloor`)"
+      - "traefik.http.routers.shopfloor-bff-health.rule=Path(`/healthz-bff`)"
       - "traefik.http.routers.shopfloor-bff.entrypoints=web"
+      - "traefik.http.routers.shopfloor-bff.middlewares=shopfloor-cors@docker"
+      - "traefik.http.middlewares.shopfloor-cors.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.shopfloor-cors.headers.accesscontrolallowmethods=GET,POST,OPTIONS,PUT,DELETE"
+      - "traefik.http.middlewares.shopfloor-cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.shopfloor-cors.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.shopfloor-cors.headers.addvaryheader=true"
       - "traefik.http.services.shopfloor-bff.loadbalancer.server.port=8080"
-      - "traefik.docker.network=uretos-core-net"
+      - "traefik.docker.network=uretos-tenant-net"
     networks:
       - default
       - tenant-net
@@ -248,27 +274,27 @@ services:
     restart: unless-stopped
     depends_on:
       - docker-socket-proxy
+
   connector-box-poller:
     build: ./services/connector-box-poller
     container_name: uretos-connector-box-poller
     environment:
       - GATEWAY_URL=http://gateway-api:8080
-      - OPC_UA_HOST=opcua-server
-      - OPC_UA_PORT=4840
       - POLL_INTERVAL_SECONDS=5
       - TENANT_ID=test-tenant-e2e
+      - HARDWARE_ID=sim-box-01
     networks:
       - default
+      - tenant-net
     restart: unless-stopped
     depends_on:
       - gateway-api
-      - opcua-server
 
 networks:
-  default:
-    name: uretos-core-net
   tenant-net:
     name: uretos-tenant-net
+    external: true
+    driver: bridge
 
 volumes:
   system-postgres-data:

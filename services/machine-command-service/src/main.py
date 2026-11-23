@@ -62,11 +62,11 @@ def callback(ch, method, properties, body):
 
         log.info("Processing machine registration for hardware_id=%s (Count: %d)", hardware_id, len(machines))
 
-        result, error_reason, resolved_tenant_id = register_machines_for_box(hardware_id, machines)
+        result, error_reason, resolved_tenant_id, error_code = register_machines_for_box(hardware_id, machines)
 
         if error_reason:
             response_type = REGISTRATION_FAILED_EVENT
-            response_data = {"reason": error_reason, "hardware_id": hardware_id}
+            response_data = {"reason": error_reason, "hardware_id": hardware_id, "error_code": error_code}
             response_tenant_id = tenant_id  # "system" - Fehlerfall betrifft keinen konkreten Tenant-Stream
         else:
             response_type = REGISTERED_EVENT
