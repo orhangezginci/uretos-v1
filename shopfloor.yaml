@@ -1,0 +1,189 @@
+networks:
+  default:
+  tenant-net:
+
+services:
+  connector-box-01:
+    build: ./services/connector-box-poller
+    container_name: uretos-connector-box-01
+    environment:
+      - GATEWAY_URL=http://gateway-api:8080
+      - BOX_HARDWARE_ID=sim-box-01
+      - POLL_INTERVAL_SECONDS=5
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+    depends_on:
+      shopfloor-initializer:
+        condition: service_completed_successfully
+  connector-box-02:
+    build: ./services/connector-box-poller
+    container_name: uretos-connector-box-02
+    environment:
+      - GATEWAY_URL=http://gateway-api:8080
+      - BOX_HARDWARE_ID=sim-box-02
+      - POLL_INTERVAL_SECONDS=5
+    networks:
+      - default
+      - tenant-net
+    restart: unless-stopped
+    depends_on:
+      shopfloor-initializer:
+        condition: service_completed_successfully
+        
+  # --- OPC-UA MASCHINEN-SIMULATOREN ---
+  machine-lathe-01:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-lathe-01
+    environment:
+      - MACHINE_NAME=CNC-LATHE-01
+      - MANUFACTURER=DMG Mori
+      - MODEL=NLX 2500
+      - SERIAL=SN-DMG-01
+      - PORT=4840
+    ports:
+      - "4840:4840"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-lathe-02:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-lathe-02
+    environment:
+      - MACHINE_NAME=CNC-LATHE-02
+      - MANUFACTURER=DMG Mori
+      - MODEL=NLX 2500
+      - SERIAL=SN-DMG-02
+      - PORT=4841
+    ports:
+      - "4841:4841"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-lathe-03:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-lathe-03
+    environment:
+      - MACHINE_NAME=CNC-LATHE-03
+      - MANUFACTURER=DMG Mori
+      - MODEL=NLX 2500
+      - SERIAL=SN-DMG-03
+      - PORT=4842
+    ports:
+      - "4842:4842"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-lathe-04:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-lathe-04
+    environment:
+      - MACHINE_NAME=CNC-LATHE-04
+      - MANUFACTURER=DMG Mori
+      - MODEL=NLX 2500
+      - SERIAL=SN-DMG-04
+      - PORT=4843
+    ports:
+      - "4843:4843"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-lathe-05:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-lathe-05
+    environment:
+      - MACHINE_NAME=CNC-LATHE-05
+      - MANUFACTURER=DMG Mori
+      - MODEL=NLX 2500
+      - SERIAL=SN-DMG-05
+      - PORT=4844
+    ports:
+      - "4844:4844"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-mill-06:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-mill-06
+    environment:
+      - MACHINE_NAME=CNC-MILL-06
+      - MANUFACTURER=Hermle
+      - MODEL=C 42U
+      - SERIAL=SN-HER-06
+      - PORT=4845
+    ports:
+      - "4845:4845"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-mill-07:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-mill-07
+    environment:
+      - MACHINE_NAME=CNC-MILL-07
+      - MANUFACTURER=Hermle
+      - MODEL=C 42U
+      - SERIAL=SN-HER-07
+      - PORT=4846
+    ports:
+      - "4846:4846"
+    networks:
+      - default
+    restart: unless-stopped
+
+  machine-mill-08:
+    build: ./tools/opc-machine-sim
+    container_name: uretos-machine-mill-08
+    environment:
+      - MACHINE_NAME=CNC-MILL-08
+      - MANUFACTURER=Hermle
+      - MODEL=C 42U
+      - SERIAL=SN-HER-08
+      - PORT=4847
+    ports:
+      - "4847:4847"
+    networks:
+      - default
+    restart: unless-stopped
+
+  shopfloor-initializer:
+    image: python:3.11-slim
+    container_name: uretos-shopfloor-initializer
+    volumes:
+      - ./shopfloor.yaml:/app/shopfloor.yaml
+      - ./scripts/register_full_shopfloor.py:/app/register_full_shopfloor.py
+    working_dir: /app
+    environment:
+      - GATEWAY_URL=http://gateway-api:8080
+      - YAML_FILE=shopfloor.yaml
+    depends_on:
+      - gateway-api
+    command:
+      - sh
+      - -c
+      - |
+        python3 -c "
+        import time, urllib.request
+        print('Warte auf Gateway-API (/healthz)...')
+        while True:
+            try:
+                if urllib.request.urlopen('http://gateway-api:8080/healthz', timeout=2).status == 200:
+                    print('Gateway ist erreichbar!')
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        "
+        echo "Installiere requests..."
+        pip install --no-cache-dir requests --quiet
+        python3 register_full_shopfloor.py
+    networks:
+      - default
+      - tenant-net
