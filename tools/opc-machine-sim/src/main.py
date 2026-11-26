@@ -22,9 +22,13 @@ Objects
         │           ├── PowerOnDuration        (ns=DI, Property)  Duration (Double, ms), monoton wachsend
         │           ├── OperationDuration      (ns=DI, Property)  Duration (Double, ms), waechst nur waehrend der Produktion
         │           └── PartsProducedInLifetime (ns=MachineTool)  UInt64, zaehlt nur waehrend der Produktion
-        │   └── MainSpindle                    (ns=custom)  <MonitoredElement>, SpindleMonitoringType
-        │       ├── Name                       (ns=MachineTool, Property)  String
-        │       └── IsRotating                 (ns=MachineTool)  Boolean, dreht im Bearbeitungsabschnitt jedes Teilezyklus
+        │   ├── MainSpindle                    (ns=custom)  <MonitoredElement>, SpindleMonitoringType
+        │   │   ├── Name                       (ns=MachineTool, Property)  String
+        │   │   └── IsRotating                 (ns=MachineTool)  Boolean, dreht im Bearbeitungsabschnitt jedes Teilezyklus
+        │   └── Process                        (ns=Machinery, Folder)  OPC 40001-1 Einstiegspunkt fuer Prozesswerte
+        │       └── SpindleSpeed               (ns=custom)  <ProcessValueType> (OPC 40001-2)
+        │           ├── SignalTag              (ns=PADIM, Property)  String
+        │           └── AnalogSignal           (ns=PADIM)  Double [r/min], mit EngineeringUnits + EURange
         └── ParameterSet                       (ns=DI)
             └── Temperature                    (ns=custom)  Double, °C
 """
@@ -59,6 +63,8 @@ CYCLE_TIME_SEC = os.environ.get("CYCLE_TIME_SEC")
 PARTS_START = os.environ.get("PARTS_START")
 TOOL_CHANGE_PROB = float(os.environ.get("TOOL_CHANGE_PROB", "0.04"))
 SIM_SEED = os.environ.get("SIM_SEED")
+# Spindeldrehzahl: Bereich "min-max" in U/min ueberschreibbar (Default: Fraesmaschinen 4000-9000, sonst 1200-3000)
+SPINDLE_RPM_RANGE = os.environ.get("SPINDLE_RPM_RANGE")
 
 # OPC 10000-100 (DI): DeviceHealthEnumeration
 HEALTH_NAMES = {
@@ -145,6 +151,8 @@ class PartCounter:
         extra = self.rng.uniform(25.0, 90.0) if self.rng.random() < self.tool_change_prob else 0.0
         cycle = base + extra
         self.stand = cycle - cut
+        # Anderes Teileprogramm -> andere Solldrehzahl (80..100 % der Maschinen-Basisdrehzahl)
+        self.rpm_factor = self.rng.uniform(0.8, 1.0)
         return cycle
 
     def rotating(self, producing: bool) -> bool:
@@ -163,6 +171,38 @@ class PartCounter:
             made += 1
             self.cycle = self._next_cycle()
         return made
+
+
+def spindle_profile(serial: str, machine_name: str) -> tuple[float, float]:
+    """(Basisdrehzahl in U/min, Maximaldrehzahl fuer EURange), je Seriennummer reproduzierbar."""
+    lo, hi = (4000.0, 9000.0) if "MILL" in machine_name.upper() else (1200.0, 3000.0)
+    if SPINDLE_RPM_RANGE:
+        lo, hi = (float(x) for x in SPINDLE_RPM_RANGE.split("-"))
+    base = round(lo + (zlib.crc32((serial + ":rpm").encode("utf-8")) % 1001) / 1000.0 * (hi - lo), -1)
+    return base, round(hi * 1.15, -2)
+
+
+class SpindleSpeed:
+    """Istdrehzahl: faehrt mit begrenzter Beschleunigung hoch, laeuft aus, rauscht leicht um den Sollwert."""
+
+    def __init__(self, base_rpm: float, rng: random.Random):
+        self.rpm = 0.0
+        self.accel = base_rpm / 3.0   # ca. 3 s bis zur Solldrehzahl
+        self.decel = base_rpm / 4.0   # ca. 4 s Auslauf
+        self.rng = rng
+
+    def step(self, dt: float, target: float) -> None:
+        if target > self.rpm:
+            self.rpm = min(target, self.rpm + self.accel * dt)
+        else:
+            self.rpm = max(target, self.rpm - self.decel * dt)
+
+    def reading(self, target: float) -> float:
+        """Messwert: 0 im Stillstand, sonst Rauschen (0,4 % im Beharrungszustand, 0,1 % waehrend der Rampe)."""
+        if self.rpm <= 0.0:
+            return 0.0
+        sigma = 0.004 if abs(self.rpm - target) < 1e-6 else 0.001
+        return round(max(0.0, self.rpm * (1.0 + self.rng.gauss(0.0, sigma))), 1)
 
 
 def is_producing(item_state_var, health_var) -> bool:
@@ -190,6 +230,7 @@ def make_control_handler(
     power_on_var = nodes["power_on"]
     operation_var = nodes["operation"]
     spindle_var = nodes["spindle"]
+    speed_var = nodes["speed"]
     parts_var = nodes["parts"]
 
     class ControlHandler(BaseHTTPRequestHandler):
@@ -227,6 +268,7 @@ def make_control_handler(
                         "cycle_time_mean_sec": round(nodes["cycle_mean_sec"], 2),
                         "producing": is_producing(item_state_var, health_var),
                         "spindle_rotating": bool(spindle_var.get_value()),
+                        "spindle_speed_rpm": round(speed_var.get_value(), 1),
                         "auto_temp_paused": paused_remaining > 0,
                         "auto_temp_pause_remaining_sec": round(paused_remaining, 2),
                     },
@@ -318,6 +360,8 @@ def main() -> None:
     # MachineTool-Namespace: dort liegen Monitoring/MachineTool (OPC 40501-1). Eine echte Werkzeugmaschine
     # registriert ihn immer; Clients erkennen daran den Maschinentyp.
     idx_mt = server.register_namespace("http://opcfoundation.org/UA/MachineTool/")
+    # PADIM (OPC 30081): dort liegen AnalogSignal und SignalTag der Process Values (OPC 40001-2).
+    idx_padim = server.register_namespace("http://opcfoundation.org/UA/PADIM/")
 
     objects = server.get_objects_node()
 
@@ -399,6 +443,31 @@ def main() -> None:
     spindle_node.add_property(idx_mt, "Name", "Main Spindle")
     spindle_var = spindle_node.add_variable(idx_mt, "IsRotating", ua.Variant(False, ua.VariantType.Boolean))
 
+    # Prozesswert Spindeldrehzahl (OPC 40001-2 ProcessValueType) unter Monitoring/Process (OPC 40001-1).
+    # Pflicht: SignalTag + AnalogSignal (PADIM-NS); AnalogSignal traegt EngineeringUnits + EURange (NS 0).
+    base_rpm, max_rpm = spindle_profile(SERIAL, MACHINE_NAME)
+    process_folder = monitoring_node.add_folder(idx_mach, "Process")
+    speed_node = process_folder.add_object(idx_custom, "SpindleSpeed")
+    speed_node.add_property(idx_padim, "SignalTag", "MainSpindle.SpeedActual")
+    speed_var = speed_node.add_variable(idx_padim, "AnalogSignal", ua.Variant(0.0, ua.VariantType.Double))
+    rpm_unit = ua.EUInformation()
+    rpm_unit.NamespaceUri = "http://www.opcfoundation.org/UA/units/un/cefact"
+    rpm_unit.UnitId = 5059638  # UN/CEFACT "M46" = revolution per minute
+    rpm_unit.DisplayName = ua.LocalizedText("r/min")
+    rpm_unit.Description = ua.LocalizedText("revolution per minute")
+    speed_var.add_property(
+        ua.NodeId(0, idx_custom), ua.QualifiedName("EngineeringUnits", 0),
+        ua.Variant(rpm_unit, ua.VariantType.ExtensionObject), datatype=ua.NodeId(ua.ObjectIds.EUInformation),
+    )
+    rpm_range = ua.Range()
+    rpm_range.Low = 0.0
+    rpm_range.High = max_rpm
+    speed_var.add_property(
+        ua.NodeId(0, idx_custom), ua.QualifiedName("EURange", 0),
+        ua.Variant(rpm_range, ua.VariantType.ExtensionObject), datatype=ua.NodeId(ua.ObjectIds.Range),
+    )
+    speed_model = SpindleSpeed(base_rpm, random.Random(SIM_SEED if SIM_SEED else None))
+
     # --- Prozesswerte (DI ParameterSet) ---
     param_set = machine_node.add_object(idx_di, "ParameterSet")
     temp_var = param_set.add_variable(idx_custom, "Temperature", ua.Variant(38.5, ua.VariantType.Double))
@@ -413,6 +482,7 @@ def main() -> None:
         "parts": parts_var,
         "operation": operation_var,
         "spindle": spindle_var,
+        "speed": speed_var,
         "cycle_mean_sec": cycle_mean_sec,
     }
 
@@ -485,7 +555,11 @@ def main() -> None:
                 if producing:
                     operation_ms += dt * 1000.0
                     operation_var.set_value(ua.Variant(operation_ms, ua.VariantType.Double))
-                spindle_var.set_value(ua.Variant(part_counter.rotating(producing), ua.VariantType.Boolean))
+                rotating = part_counter.rotating(producing)
+                spindle_var.set_value(ua.Variant(rotating, ua.VariantType.Boolean))
+                target_rpm = round(base_rpm * part_counter.rpm_factor, -1) if rotating else 0.0
+                speed_model.step(dt, target_rpm)
+                speed_var.set_value(ua.Variant(speed_model.reading(target_rpm), ua.VariantType.Double))
             with state_lock:
                 if now < manual_state["temp_pause_until"]:
                     continue

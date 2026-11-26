@@ -177,6 +177,12 @@ function appendTelemetryFields(card, tel) {
   if (tel.spindle_rotating !== undefined && tel.spindle_rotating !== null) {
     card.appendChild(field("Spindel", tel.spindle_rotating ? "dreht" : "steht", "tel"));
   }
+  if (tel.machinery_item_state) {
+    card.appendChild(field("ItemState", String(tel.machinery_item_state), "tel"));
+  }
+  if (tel.machinery_operation_mode) {
+    card.appendChild(field("OpMode", String(tel.machinery_operation_mode), "tel"));
+  }
   if (tel.operation_hours !== undefined && tel.operation_hours !== null) {
     const hrs = Number(tel.operation_hours);
     if (Number.isFinite(hrs)) card.appendChild(field("Betrieb", `${hrs.toFixed(1)} h`, "tel"));

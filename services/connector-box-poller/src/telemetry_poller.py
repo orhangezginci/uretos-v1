@@ -48,6 +48,10 @@ PARTS_NODE_NAMES = ["PartsProducedInLifetime", "PartCount", "ProducedParts"]
 SPINDLE_ROTATING_NAMES = ["IsRotating"]
 OPERATION_DURATION_NAMES = ["OperationDuration"]
 POWER_ON_DURATION_NAMES = ["PowerOnDuration"]
+# Zustandsmaschinen (OPC 40001-1): gesucht wird das OBJEKT, der Wert steht in dessen Kind "CurrentState".
+# ("OperationMode" aus OPC 40501-1 ist etwas anderes: ein Enum-Wert, kein MachineryOperationMode.)
+MACHINERY_ITEM_STATE_NAMES = ["MachineryItemState"]
+MACHINERY_OPERATION_MODE_NAMES = ["MachineryOperationMode"]
 MAX_SEARCH_DEPTH = 4
 
 
@@ -186,6 +190,53 @@ async def find_variable_in_subtree(root, names: list[str], max_depth: int = MAX_
     return None
 
 
+async def find_state_machine_value(root, object_names: list[str], max_depth: int = MAX_SEARCH_DEPTH):
+    """
+    Findet eine Zustandsmaschine (z. B. MachineryItemState, MachineryOperationMode) und liefert deren Wert.
+    Das OBJEKT wird ueber seinen BrowseName gesucht, der Wert steht in seinem Kind `CurrentState`. So gibt es
+    keine Verwechslung zwischen mehreren Zustandsmaschinen, die alle `CurrentState` heissen, und das Ergebnis
+    haengt nicht von der Reihenfolge ab, in der ein Server seine Knoten liefert.
+    Fallback fuer vereinfachte Server: eine Variable mit dem Namen der Zustandsmaschine.
+    Prioritaet folgt `object_names`, innerhalb eines Namens gewinnt der flachste Treffer.
+    Rueckgabe: (node, relativer_pfad) oder None.
+    """
+    wanted = [n.lower() for n in object_names]
+    objects_found: dict[str, tuple[object, str]] = {}
+    variables_found: dict[str, tuple[object, str]] = {}
+    queue = deque([(root, 0, "")])
+
+    while queue:
+        node, depth, path = queue.popleft()
+        if depth >= max_depth:
+            continue
+        try:
+            children = await _browse_children(node)
+        except Exception:
+            continue
+        for _ns, name, node_class, child in children:
+            child_path = f"{path}/{name}"
+            lname = name.lower()
+            if node_class == ua.NodeClass.Object:
+                if lname in wanted and lname not in objects_found:
+                    objects_found[lname] = (child, child_path)
+                queue.append((child, depth + 1, child_path))
+            elif node_class == ua.NodeClass.Variable and lname in wanted and lname not in variables_found:
+                variables_found[lname] = (child, child_path)
+
+    for lname in wanted:
+        if lname in objects_found:
+            obj, path = objects_found[lname]
+            try:
+                for _ns, name, node_class, child in await _browse_children(obj):
+                    if node_class == ua.NodeClass.Variable and name.lower() == "currentstate":
+                        return child, f"{path}/{name}"
+            except Exception:
+                pass
+        if lname in variables_found:
+            return variables_found[lname]
+    return None
+
+
 # OPC 10000-100 (DI): DeviceHealthEnumeration -> (status, error_code)
 DEVICE_HEALTH_MAP: dict[int, tuple[str, str | None]] = {
     0: ("ok", None),  # NORMAL
@@ -288,6 +339,8 @@ def send_telemetry(
     spindle_rotating: bool | None = None,
     operation_hours: float | None = None,
     power_on_hours: float | None = None,
+    machinery_item_state: str | None = None,
+    machinery_operation_mode: str | None = None,
 ) -> None:
     telemetry_data: dict[str, object] = {
         "temperature": float(temp_val),
@@ -300,6 +353,10 @@ def send_telemetry(
         telemetry_data["operation_hours"] = float(operation_hours)
     if power_on_hours is not None:
         telemetry_data["power_on_hours"] = float(power_on_hours)
+    if machinery_item_state:
+        telemetry_data["machinery_item_state"] = machinery_item_state
+    if machinery_operation_mode:
+        telemetry_data["machinery_operation_mode"] = machinery_operation_mode
 
     payload = {
         "tenant_id": tenant_id,
@@ -366,6 +423,8 @@ async def poll_loop(tenant_id: str, box_id: str, machine_id: str, opc_endpoint: 
                 spindle_hit = await find_variable_in_subtree(machine_node, SPINDLE_ROTATING_NAMES)
                 op_dur_hit = await find_variable_in_subtree(machine_node, OPERATION_DURATION_NAMES)
                 pwr_dur_hit = await find_variable_in_subtree(machine_node, POWER_ON_DURATION_NAMES)
+                item_state_hit = await find_state_machine_value(machine_node, MACHINERY_ITEM_STATE_NAMES)
+                op_mode_hit = await find_state_machine_value(machine_node, MACHINERY_OPERATION_MODE_NAMES)
 
                 temp_node = temp_hit[0] if temp_hit else None
                 status_node = status_hit[0] if status_hit else None
@@ -373,6 +432,8 @@ async def poll_loop(tenant_id: str, box_id: str, machine_id: str, opc_endpoint: 
                 spindle_node = spindle_hit[0] if spindle_hit else None
                 op_dur_node = op_dur_hit[0] if op_dur_hit else None
                 pwr_dur_node = pwr_dur_hit[0] if pwr_dur_hit else None
+                item_state_node = item_state_hit[0] if item_state_hit else None
+                op_mode_node = op_mode_hit[0] if op_mode_hit else None
                 is_device_health = bool(status_hit and status_hit[1].lower().endswith("/devicehealth"))
 
                 if not temp_node:
@@ -384,13 +445,15 @@ async def poll_loop(tenant_id: str, box_id: str, machine_id: str, opc_endpoint: 
                     continue
 
                 log.info(
-                    "Gebunden fuer %s an DeviceSet/%s (Temp: %s | Status/Health: %s | Teile: %s | Spindel: %s)",
+                    "Gebunden fuer %s an DeviceSet/%s (Temp: %s | Status/Health: %s | Teile: %s | Spindel: %s | ItemState: %s | OpMode: %s)",
                     machine_id,
                     machine_name,
                     temp_hit[1],
                     status_hit[1] if status_hit else "nein -> default ok",
                     parts_hit[1] if parts_hit else "nein",
                     spindle_hit[1] if spindle_hit else "nein",
+                    item_state_hit[1] if item_state_hit else "nein",
+                    op_mode_hit[1] if op_mode_hit else "nein",
                 )
 
                 while True:
@@ -413,6 +476,16 @@ async def poll_loop(tenant_id: str, box_id: str, machine_id: str, opc_endpoint: 
                             if pwr_dur_node
                             else None
                         )
+                        raw_item_state = (
+                            _unwrap(await item_state_node.read_value()) if item_state_node else None
+                        )
+                        raw_op_mode = _unwrap(await op_mode_node.read_value()) if op_mode_node else None
+                        machinery_item_state = (
+                            str(raw_item_state).strip() if raw_item_state is not None else None
+                        )
+                        machinery_operation_mode = (
+                            str(raw_op_mode).strip() if raw_op_mode is not None else None
+                        )
 
                         # 1. Messwerte an /v1/telemetry senden
                         send_telemetry(
@@ -424,6 +497,8 @@ async def poll_loop(tenant_id: str, box_id: str, machine_id: str, opc_endpoint: 
                             spindle_rotating=spindle_rotating,
                             operation_hours=op_hours,
                             power_on_hours=pwr_hours,
+                            machinery_item_state=machinery_item_state or None,
+                            machinery_operation_mode=machinery_operation_mode or None,
                         )
 
                         # 2. Statuswechsel nur bei Änderung an PATCH /v1/machines/<id>/status melden
@@ -439,12 +514,14 @@ async def poll_loop(tenant_id: str, box_id: str, machine_id: str, opc_endpoint: 
                                 )
 
                         log.info(
-                            "Telemetrie gesendet [%s] -> Temp: %.1f °C | Status: %s | Teile: %s | Spindel: %s",
+                            "Telemetrie gesendet [%s] -> Temp: %.1f °C | Status: %s | Teile: %s | Spindel: %s | State: %s | Mode: %s",
                             machine_id,
                             temp_val,
                             mapped_status,
                             parts_val if parts_val is not None else "-",
                             spindle_rotating if spindle_rotating is not None else "-",
+                            machinery_item_state or "-",
+                            machinery_operation_mode or "-",
                         )
 
                     except Exception as read_err:
